@@ -29,6 +29,7 @@ DEBUG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log_state_
 CHANNEL_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "channel_map.json")
 
 TOOL_ITEM_RE = r'"item":\{.*?"type":"(function_call|custom_tool_call|web_search_call)"'
+TID_FULL_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 # 工具行标记：出现任意一个即视为"工具正在执行"（running）。
 # 注意不要用裸词 function_call，避免 reasoning 文本误伤。
@@ -49,6 +50,12 @@ def set_state(st, state, ts, summary=""):
     st.state = state
     st.state_ts = ts
     st.summary = summary
+
+
+def extract_tid(body):
+    """从日志行提取完整会话 ID；截断/伪造的短 ID 一律忽略。"""
+    m = re.search(r"thread_id=(" + TID_FULL_RE.pattern + r")", body or "")
+    return m.group(1) if m else None
 
 
 def load_channel_map(path=None):
@@ -97,7 +104,7 @@ def apply_row(body, st, ts):
     m_nf = re.search(r"(?:model_)?needs_follow_up=(\w+)", body)
     is_turn_end_hint = m_nf is not None and m_nf.group(1) == "false"
     is_midturn_hint = m_nf is not None and m_nf.group(1) == "true"
-    m_sub = re.search(r'submission\.id="([0-9a-f-]+)"', body)
+    m_sub = re.search(r'submission\.id="(' + TID_FULL_RE.pattern + r')"', body)
     sid = m_sub.group(1) if m_sub is not None else None
     is_new_submission = sid is not None and sid != st.last_submission_id
     is_real_user = (
@@ -224,9 +231,9 @@ class LogStateTracker:
                         continue
                     if '"type":"response.completed"' in body:
                         continue
-                    m = re.search(r"thread_id=([0-9a-f-]+)", body)
-                    if m:
-                        self.watched_thread = m.group(1)
+                    tid = extract_tid(body)
+                    if tid:
+                        self.watched_thread = tid
                         break
             if not self.last_submission_id:
                 cur.execute(
@@ -234,7 +241,7 @@ class LogStateTracker:
                     "'%submission.id=%' ORDER BY id DESC LIMIT 100"
                 )
                 for (body,) in cur.fetchall():
-                    m = re.search(r'submission\.id="([0-9a-f-]+)"', body or "")
+                    m = re.search(r'submission\.id="(' + TID_FULL_RE.pattern + r')"', body or "")
                     if m:
                         self.last_submission_id = m.group(1)
                         break
@@ -295,7 +302,7 @@ class LogStateTracker:
         self._save()
 
     def _handle(self, rid, ts, body):
-        m_sub = re.search(r'submission\.id="([0-9a-f-]+)"', body)
+        m_sub = re.search(r'submission\.id="(' + TID_FULL_RE.pattern + r')"', body)
         sid = m_sub.group(1) if m_sub is not None else None
         is_real_user = (
             "op.dispatch.user_input" in body
@@ -307,15 +314,15 @@ class LogStateTracker:
         # 线程过滤：只处理当前关注线程的 trace 行；SSE 行无法归属线程，放行。
         # 例外：其他线程的真实用户消息（user_input 且无工具标记）允许通过，
         # 以便 AgentPad 自动跟随最近使用的会话。
-        m = re.search(r"thread_id=([0-9a-f-]+)", body)
-        if m is not None and self.watched_thread and m.group(1) != self.watched_thread:
+        tid = extract_tid(body)
+        if tid is not None and self.watched_thread and tid != self.watched_thread:
             if not is_real_user:
                 return
 
         meaningful = apply_row(body, self, ts)
         if meaningful:
-            if is_real_user and m is not None:
-                self.watched_thread = m.group(1)
+            if is_real_user and tid is not None:
+                self.watched_thread = tid
             self.last_event_ts = max(self.last_event_ts, ts)
             self._debug(rid, ts, self.state, self.summary)
 
@@ -412,15 +419,8 @@ class MultiLogTracker:
             self.active_tid = max(self.pool, key=lambda t: self.pool[t]["recency"])
 
     def _read_channel_map(self):
-        """按文件修改时间增量读取绑定（用户随时可改，1 秒内生效）。"""
-        try:
-            mt = os.path.getmtime(CHANNEL_MAP_FILE)
-            if mt != self._cm_mtime:
-                self._cm_mtime = mt
-                self._cm = load_channel_map()
-        except OSError:
-            pass
-        return self._cm
+        """读取频道绑定（本机文件 mtime 不可靠，直接每次读；文件很小）。"""
+        return load_channel_map()
 
     def _load_cache(self):
         try:
@@ -430,6 +430,8 @@ class MultiLogTracker:
             self.active_tid = c.get("active_tid", "")
             self.slot_map = {str(k): int(v) for k, v in (c.get("slot_map") or {}).items()}
             for tid, d in (c.get("threads") or {}).items():
+                if not TID_FULL_RE.fullmatch(tid):
+                    continue  # 清掉截断 ID 的幽灵线程
                 st = ThreadState(tid)
                 st.state = d.get("state", "idle")
                 st.state_ts = int(d.get("state_ts", 0))
@@ -485,9 +487,10 @@ class MultiLogTracker:
         self._save_cache()
 
     def _route(self, rid, ts, body):
-        m = re.search(r"thread_id=([0-9a-f-]+)", body)
-        has_tid = m is not None
-        tid = m.group(1) if has_tid else self.active_tid
+        tid = extract_tid(body)
+        has_tid = tid is not None
+        if not has_tid:
+            tid = self.active_tid
         if not tid:
             return
         st = self.threads.get(tid)
@@ -502,7 +505,7 @@ class MultiLogTracker:
         # SSE 流（无线程归属）只喂给"最近在动"的活跃会话，避免旧噪音灌错对象
         if not has_tid and st.last_event_ts and ts - st.last_event_ts > 15:
             return
-        m_sub = re.search(r'submission\.id="([0-9a-f-]+)"', body)
+        m_sub = re.search(r'submission\.id="(' + TID_FULL_RE.pattern + r')"', body)
         sid = m_sub.group(1) if m_sub is not None else None
         is_real_user = (
             has_tid
@@ -554,7 +557,8 @@ class MultiLogTracker:
         # 2) 自动候选：app 会话池，或日志里 6 小时内活跃的会话；手工绑定的不再参与
         candidates = [
             st for st in self.threads.values()
-            if st.thread_id not in manual.values()
+            if TID_FULL_RE.fullmatch(st.thread_id)
+            and st.thread_id not in manual.values()
             and (st.thread_id in self.pool or st.recency > now - 6 * 3600)
         ]
         candidates.sort(key=lambda st: (-st.recency, st.seq))
@@ -568,7 +572,7 @@ class MultiLogTracker:
                 slots[s] = st
                 placed.add(st.thread_id)
 
-        # 4) 新会话填空闲槽；没有空闲则逐出"最不活跃"的自动会话
+        # 4) 新会话填空闲槽；满了则只有比"当前最不活跃的自动会话"更新才逐出（频道1除外）
         for st in candidates:
             if st.thread_id in placed:
                 continue
@@ -576,7 +580,12 @@ class MultiLogTracker:
             if free:
                 slot = free[0]
             else:
-                auto_slots = {s: tid for s, tid in slots.items() if tid not in manual.values()}
+                auto_slots = {
+                    s: st.thread_id for s, st in slots.items()
+                    if st.thread_id not in manual.values()
+                }
+                # 频道 1 是锚定槽：不参与逐出（用户要求"第一频道一直在第一频道的位置"）
+                auto_slots = {s: tid for s, tid in auto_slots.items() if s != 1}
                 if not auto_slots:
                     break
                 victim = min(
@@ -584,6 +593,8 @@ class MultiLogTracker:
                     key=lambda s: (self.threads[auto_slots[s]].recency,
                                    self.threads[auto_slots[s]].seq),
                 )
+                if st.recency <= self.threads[auto_slots[victim]].recency:
+                    break  # 新会话不比最旧的活跃，不逐出
                 del self.slot_map[auto_slots[victim]]
                 slot = victim
             self.slot_map[st.thread_id] = slot
