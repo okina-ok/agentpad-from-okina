@@ -1,7 +1,27 @@
 # AgentPad 更新日志
 
 > 产品：Codex Micro 平替 RGB 状态键盘（v1 = 通道 B 状态文件协议）
-> 当前版本：v0.6.2（2026-08-07，参考项目调研）
+> 当前版本：v0.7.0（2026-08-07，灯珠原型链路打通）
+
+## v0.7.0 · 2026-08-07 —— 灯珠原型链路打通（路线图第 6 步开始）
+
+### 新增
+- `bridge.py`：串口桥，读 display_state_v2.json → 单行 JSON 帧下发（协议 v0.1，
+  内容变化才发、ACK 确认 + 3 次重发、半包缓冲）。
+- `led_firmware.py`：ESP32-C3 MicroPython 固件（上传为板子 /main.py），收帧驱动
+  WS2812（原型用板载 GPIO8 单灯），灯效 solid/breathe/flash/off，同时上报按键事件。
+- `upload_main.py` 支持 `--src / --port` 参数。
+- v1 规格锁定：6 agent + 7 命令 + 旋钮 + **1.54" IPS 屏**，主控 ESP32-C3，
+  嘉立创全 SMT 免焊（见 docs/v1-hardware-plan.md）。
+
+### 实测（2026-08-07 02:30+）
+- status_daemon → bridge → COM5 → 板载灯 全链路 ACK 通过；
+- 测试模式 6 种状态循环驱动正常：紫呼吸 / 青常亮 / 琥珀闪 / 绿 / 红闪 / 灰。
+
+### 待办（第 6 步剩余）
+- 接 13 颗 WS2812 灯条（固件改 LED_COUNT=13）
+- 多线程状态机（6 会话 LRU + 钉选）
+- 1.54" 屏显示会话列表
 
 ## v0.6.2 · 2026-08-07 —— 调研参考项目 agentpad13
 

@@ -1,13 +1,18 @@
 """通过串口把 button_test.py 以 base64 写入板子 /main.py（不依赖 ampy）"""
 
+import argparse
 import base64
 import os
 import serial
 import sys
 import time
 
-SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "button_test.py")
-PORT = "COM5"
+ap = argparse.ArgumentParser(description="通过串口把本地文件上传为板子 /main.py")
+ap.add_argument("--src", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "button_test.py"))
+ap.add_argument("--port", default="COM5")
+args = ap.parse_args()
+SRC = args.src
+PORT = args.port
 
 with open(SRC, "rb") as fh:
     payload = base64.b64encode(fh.read()).decode()

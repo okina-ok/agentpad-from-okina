@@ -36,7 +36,10 @@
 - 产物：`inject_text.py`（子进程注入，绕过后台进程焦点限制）
 
 **第 6 步：状态灯接实体硬件**
-- 购买 WS2812 灯珠 ×13（或灯条裁剪），固件加灯珠驱动 + 串口桥
+- ✅ 灯珠原型链路已通（2026-08-07）：status_daemon → bridge.py → COM5 →
+  板载 WS2812 单灯，6 状态循环 ACK 验证通过（产物：bridge.py / led_firmware.py）
+- 剩余：接 WS2812 灯条 ×13、多线程状态机（6 会话 LRU+钉选）、1.54" IPS 屏、
+  嘉立创打板（全 SMT 免焊）
 
 **第 7 步：打包成安装包**
 - PyInstaller + Inno Setup，自动发现 COM 口 / Codex 日志库
