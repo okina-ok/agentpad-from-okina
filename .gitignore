@@ -1,0 +1,20 @@
+# 模型文件（460MB，GitHub 单文件限 100MB，不能传）
+whisper-small/model.bin
+
+# 运行产物 / 日志
+__pycache__/
+*.pyc
+*.log
+serial_capture.txt
+display_state_v2.json
+log_state_cache.json
+ptt_result.txt
+ptt_tmp.wav
+test_zh.wav
+
+# 下载的 MicroPython 固件（README 里有官方地址）
+firmware/*.bin
+firmware/cfg_test.json
+
+# 临时
+.tmp/
