@@ -22,6 +22,8 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
+from inject_text import inject_text
+
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whisper-small")
 RESULT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt_result.txt")
 WAV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt_tmp.wav")
@@ -107,6 +109,7 @@ def main():
     ap.add_argument("--port", default="COM5")
     ap.add_argument("--model", default=MODEL_DIR)
     ap.add_argument("--demo", action="store_true", help="从 stdin 读按键事件，不用串口")
+    ap.add_argument("--no-inject", action="store_true", help="转写后不自动填入 Codex 输入框")
     args = ap.parse_args()
 
     log_result("loading model from %s ..." % args.model)
@@ -138,7 +141,16 @@ def main():
                 try:
                     wav = save_wav(data)
                     text = transcribe(model, wav)
-                    log_result(">>> 转写结果：" + (text or "（没听清）"))
+                    result = text or "（没听清）"
+                    log_result(">>> 转写结果：" + result)
+                    if result != "（没听清）" and not args.no_inject:
+                        try:
+                            if inject_text(result):
+                                log_result(">>> 已填入 Codex 输入框，请审阅后发送")
+                            else:
+                                log_result(">>> 注入失败：找不到 Codex 窗口")
+                        except Exception as exc:
+                            log_error(exc)
                 except Exception as exc:
                     log_error(exc)
                 finally:
