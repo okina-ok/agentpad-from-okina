@@ -88,6 +88,23 @@ def inject_text(text, title="ChatGPT"):
     send_keys("^v")
     time.sleep(0.3)
     print("injected:", text[:40])
+
+    # 6) 验证：读回输入框内容
+    try:
+        desktop = Desktop(backend="uia")
+        w = desktop.window(handle=hwnd)
+        r0 = win32gui.GetWindowRect(hwnd)
+        for e in w.descendants(control_type="Edit"):
+            r = e.rectangle()
+            if r.top >= r0[3] - 350 and 30 <= (r.bottom - r.top) <= 160:
+                val = e.get_value() or ""
+                if text in val:
+                    print("verify OK")
+                    return True
+                print("verify FAIL, composer:", repr(val[:60]))
+                return False
+    except Exception as exc:
+        print("verify skipped:", exc)
     return True
 
 

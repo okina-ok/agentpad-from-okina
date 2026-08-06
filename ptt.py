@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -22,7 +23,7 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
-from inject_text import inject_text
+INJECT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inject_text.py")
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whisper-small")
 RESULT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt_result.txt")
@@ -104,6 +105,23 @@ def transcribe(model, wav_path):
     return "".join(seg.text for seg in segments).strip()
 
 
+def run_inject(text):
+    """派生子进程执行注入（后台进程直接调 UI 自动化会被 Windows 限制焦点）。"""
+    try:
+        p = subprocess.run(
+            [sys.executable, INJECT_SCRIPT, text],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        lines = (p.stdout or "").strip().splitlines()
+        return p.returncode == 0, lines[-1] if lines else "rc=%d" % p.returncode
+    except Exception as exc:
+        return False, repr(exc)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", default="COM5")
@@ -144,13 +162,12 @@ def main():
                     result = text or "（没听清）"
                     log_result(">>> 转写结果：" + result)
                     if result != "（没听清）" and not args.no_inject:
-                        try:
-                            if inject_text(result):
-                                log_result(">>> 已填入 Codex 输入框，请审阅后发送")
-                            else:
-                                log_result(">>> 注入失败：找不到 Codex 窗口")
-                        except Exception as exc:
-                            log_error(exc)
+                        log_result(">>> 正在填入 Codex 输入框...")
+                        ok, detail = run_inject(result)
+                        if ok:
+                            log_result(">>> 已填入 Codex 输入框，请审阅后发送（%s）" % detail)
+                        else:
+                            log_result(">>> 注入失败：%s" % detail)
                 except Exception as exc:
                     log_error(exc)
                 finally:
