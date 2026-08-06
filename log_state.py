@@ -520,8 +520,9 @@ class MultiLogTracker:
             # 只有真实用户消息才切换活跃会话（后台工具行不抢焦点）
             if is_real_user:
                 self.active_tid = tid
-        if has_tid and ts > st.recency:
-            st.recency = ts
+            # recency 只随真实活动更新（打开会话/后台杂音不算）
+            if has_tid and ts > st.recency:
+                st.recency = ts
 
     def _ensure_thread(self, tid):
         """取线程状态对象，不存在则按会话池信息创建（idle 起步）。"""

@@ -68,11 +68,39 @@ def main():
     assert slot3["thread_id"] == tid(9), "手工绑定未生效"
     print("5) 手工绑定 OK")
 
-    # 6) 截断 ID 一律忽略
+    # 6) 重启持久化：同一缓存重建 tracker，槽位映射不变
+    t._save_cache()
+    t2 = ls.MultiLogTracker(db_path=os.path.join(tmp, "none.sqlite"),
+                            state_db_path="", cache_path=os.path.join(tmp, "cache.json"))
+    t2.pool = dict(t.pool)
+    r6 = t2.get_slots()
+    assert [(s["slot"], s["thread_id"]) for s in r6] == [(s["slot"], s["thread_id"]) for s in r5], \
+        "重启后映射变了"
+    print("6) 重启持久化 OK")
+
+    # 7) 取消手工绑定：manual 段清空，线程保留原槽（稳定性设计）
+    ls.save_channel_map({}, {})
+    r7 = t.get_slots()
+    cm7 = ls.load_channel_map()
+    assert cm7["manual"] == {}, "manual 未清空"
+    assert r7[2]["thread_id"] == tid(9), "取消绑定后线程应保留原槽"
+    print("7) 取消手工绑定 OK:", [(s["slot"], s["title"]) for s in r7])
+
+    # 8) 12 个会话涌入，频道 1 仍锚定，槽数仍为 6
+    for n in (11, 12):
+        st = t._ensure_thread(tid(n))
+        st.recency = BASE + n * 10
+        st.state = "running"
+    r8 = t.get_slots()
+    assert r8[0]["thread_id"] == tid(8), "频道1 被 12 会话冲掉了"
+    assert len(r8) == 6
+    print("8) 12 会话下频道1 锚定 OK:", [(s["slot"], s["title"]) for s in r8])
+
+    # 9) 截断 ID 一律忽略
     assert ls.extract_tid("thread_id=019fd6a2-46d2} ...") is None
     assert ls.extract_tid("thread_id=019fd6a2-46d2-7310-af72-582411385d96}") == \
         "019fd6a2-46d2-7310-af72-582411385d96"
-    print("6) 截断 ID 忽略 OK")
+    print("9) 截断 ID 忽略 OK")
 
     print("CHANNEL BIND TESTS PASSED")
 
