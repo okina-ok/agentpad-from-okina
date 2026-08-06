@@ -161,7 +161,8 @@ def scan(status_dir, tracker=None):
             entry = {
                 "slot": i, "state": state, "fresh": fresh,
                 "color": COLOR_BY_STATE[state], "effect": EFFECT_BY_STATE[state],
-                "ts": s["ts"], "summary": s["title"], "name": s["title"], "src": "log",
+                "ts": s["ts"], "summary": s["title"], "name": s["title"],
+                "thread_id": s.get("thread_id", ""), "src": "log",
             }
             if s["thread_id"] == tracker.active_tid:
                 active_slot = i

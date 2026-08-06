@@ -26,6 +26,7 @@ import time
 DB_PATH_DEFAULT = os.path.join(os.path.expanduser("~"), ".codex", "logs_2.sqlite")
 CACHE_PATH_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log_state_cache.json")
 DEBUG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log_state_debug.log")
+CHANNEL_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "channel_map.json")
 
 TOOL_ITEM_RE = r'"item":\{.*?"type":"(function_call|custom_tool_call|web_search_call)"'
 
@@ -48,6 +49,37 @@ def set_state(st, state, ts, summary=""):
     st.state = state
     st.state_ts = ts
     st.summary = summary
+
+
+def load_channel_map(path=None):
+    """读频道绑定文件。manual = 用户手工绑定（slot -> thread_id），auto = 守护进程自动分配。"""
+    path = path or CHANNEL_MAP_FILE
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        manual = {}
+        for k, v in (d.get("manual") or {}).items():
+            try:
+                manual[int(k)] = str(v)
+            except (ValueError, TypeError):
+                pass
+        return {"manual": manual, "auto": d.get("auto") or {}}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {"manual": {}, "auto": {}}
+
+
+def save_channel_map(manual, auto, path=None):
+    """写频道绑定文件。manual 来自用户/面板，auto 是守护进程当前的自动分配快照。"""
+    path = path or CHANNEL_MAP_FILE
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({
+                "version": 1,
+                "manual": {str(k): v for k, v in sorted(manual.items())},
+                "auto": {str(k): v for k, v in sorted(auto.items())},
+            }, fh, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
 
 
 def apply_row(body, st, ts):
@@ -323,6 +355,10 @@ class MultiLogTracker:
         self.threads = {}        # thread_id -> ThreadState
         self.active_tid = ""
         self.pool = {}           # thread_id -> {title, recency, pinned}
+        self.slot_map = {}       # thread_id -> 槽位号（一旦分配就固定，LRU 只逐出不挪位）
+        self._cm_mtime = -1.0
+        self._cm = {"manual": {}, "auto": {}}
+        self._last_auto = None
         self._seq = 0
         self.state_db_path = ""
         self._find_state_db(state_db_path)
@@ -375,12 +411,24 @@ class MultiLogTracker:
         if not self.active_tid and self.pool:
             self.active_tid = max(self.pool, key=lambda t: self.pool[t]["recency"])
 
+    def _read_channel_map(self):
+        """按文件修改时间增量读取绑定（用户随时可改，1 秒内生效）。"""
+        try:
+            mt = os.path.getmtime(CHANNEL_MAP_FILE)
+            if mt != self._cm_mtime:
+                self._cm_mtime = mt
+                self._cm = load_channel_map()
+        except OSError:
+            pass
+        return self._cm
+
     def _load_cache(self):
         try:
             with open(self.cache_path, "r", encoding="utf-8") as fh:
                 c = json.load(fh)
             self.last_id = int(c.get("last_id", 0))
             self.active_tid = c.get("active_tid", "")
+            self.slot_map = {str(k): int(v) for k, v in (c.get("slot_map") or {}).items()}
             for tid, d in (c.get("threads") or {}).items():
                 st = ThreadState(tid)
                 st.state = d.get("state", "idle")
@@ -403,6 +451,7 @@ class MultiLogTracker:
                 json.dump({
                     "last_id": self.last_id,
                     "active_tid": self.active_tid,
+                    "slot_map": self.slot_map,
                     "threads": {
                         tid: {
                             "state": st.state,
@@ -437,7 +486,8 @@ class MultiLogTracker:
 
     def _route(self, rid, ts, body):
         m = re.search(r"thread_id=([0-9a-f-]+)", body)
-        tid = m.group(1) if m else self.active_tid
+        has_tid = m is not None
+        tid = m.group(1) if has_tid else self.active_tid
         if not tid:
             return
         st = self.threads.get(tid)
@@ -449,29 +499,108 @@ class MultiLogTracker:
                 st.title = self.pool[tid]["title"]
                 st.recency = self.pool[tid]["recency"]
             self.threads[tid] = st
+        # SSE 流（无线程归属）只喂给"最近在动"的活跃会话，避免旧噪音灌错对象
+        if not has_tid and st.last_event_ts and ts - st.last_event_ts > 15:
+            return
+        m_sub = re.search(r'submission\.id="([0-9a-f-]+)"', body)
+        sid = m_sub.group(1) if m_sub is not None else None
+        is_real_user = (
+            has_tid
+            and "op.dispatch.user_input" in body
+            and not any(x in body for x in TOOL_MARKERS)
+            and '"type":"response.completed"' not in body
+            and sid is not None and sid != st.last_submission_id
+        )
         meaningful = apply_row(body, st, ts)
         if meaningful:
             st.last_event_ts = max(st.last_event_ts, ts)
-            if m is not None:
-                self.active_tid = tid  # 显式线程行决定 SSE 流归属
-        if m is not None and ts > st.recency:
+            # 只有真实用户消息才切换活跃会话（后台工具行不抢焦点）
+            if is_real_user:
+                self.active_tid = tid
+        if has_tid and ts > st.recency:
             st.recency = ts
 
+    def _ensure_thread(self, tid):
+        """取线程状态对象，不存在则按会话池信息创建（idle 起步）。"""
+        st = self.threads.get(tid)
+        if st is None:
+            st = ThreadState(tid)
+            self._seq += 1
+            st.seq = self._seq
+            if tid in self.pool:
+                st.title = self.pool[tid]["title"]
+                st.recency = self.pool[tid]["recency"]
+            self.threads[tid] = st
+        return st
+
     def get_slots(self):
-        """按最近活跃排序，取前 max_threads 个会话。"""
+        """槽位分配：手工绑定优先且固定；自动分配在首次出现时定槽、之后不挪位，
+        超员时才逐出最不活跃的自动会话（手工绑定永不逐出）。"""
         now = time.time()
-        # 优先 app 当前会话池（state 库里的 threads，即"正在用的对话"）；
-        # 日志里见过但不在池中的旧会话，只在 6 小时内有活动时才上槽位。
-        pool_st = [st for st in self.threads.values() if st.thread_id in self.pool]
-        extra_st = [
+        cm = self._read_channel_map()
+        manual = cm["manual"]
+
+        slots = {}          # slot -> ThreadState
+        placed = set()      # 已占位的 thread_id
+        # 1) 手工绑定：永远优先、永不逐出
+        for slot, tid in sorted(manual.items()):
+            if slot < 1 or slot > self.max_threads:
+                continue
+            st = self._ensure_thread(tid)
+            slots[slot] = st
+            placed.add(tid)
+            self.slot_map[tid] = slot
+
+        # 2) 自动候选：app 会话池，或日志里 6 小时内活跃的会话；手工绑定的不再参与
+        candidates = [
             st for st in self.threads.values()
-            if st.thread_id not in self.pool and st.recency > now - 6 * 3600
+            if st.thread_id not in manual.values()
+            and (st.thread_id in self.pool or st.recency > now - 6 * 3600)
         ]
-        items = sorted(pool_st + extra_st, key=lambda st: (-st.recency, st.seq))
+        candidates.sort(key=lambda st: (-st.recency, st.seq))
+
+        # 3) 已自动分配过的会话，原槽位若空闲则保留（不挪位）
+        for st in candidates:
+            if st.thread_id in placed:
+                continue
+            s = self.slot_map.get(st.thread_id)
+            if s is not None and 1 <= s <= self.max_threads and s not in slots:
+                slots[s] = st
+                placed.add(st.thread_id)
+
+        # 4) 新会话填空闲槽；没有空闲则逐出"最不活跃"的自动会话
+        for st in candidates:
+            if st.thread_id in placed:
+                continue
+            free = [s for s in range(1, self.max_threads + 1) if s not in slots]
+            if free:
+                slot = free[0]
+            else:
+                auto_slots = {s: tid for s, tid in slots.items() if tid not in manual.values()}
+                if not auto_slots:
+                    break
+                victim = min(
+                    auto_slots,
+                    key=lambda s: (self.threads[auto_slots[s]].recency,
+                                   self.threads[auto_slots[s]].seq),
+                )
+                del self.slot_map[auto_slots[victim]]
+                slot = victim
+            self.slot_map[st.thread_id] = slot
+            slots[slot] = st
+            placed.add(st.thread_id)
+
+        # 5) 持久化 auto 快照（manual 保留原文件内容）
+        auto = {s: st.thread_id for s, st in slots.items()}
+        if auto != self._last_auto:
+            save_channel_map(manual, auto)
+            self._last_auto = auto
+
         out = []
-        for i, st in enumerate(items[: self.max_threads], 1):
+        for slot in sorted(slots):
+            st = slots[slot]
             out.append({
-                "slot": i,
+                "slot": slot,
                 "thread_id": st.thread_id,
                 "state": st.state,
                 "ts": st.state_ts,

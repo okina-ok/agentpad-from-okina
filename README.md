@@ -51,6 +51,8 @@ ptt.py              PTT 语音原型（录音 + faster-whisper 转写）
 button_test.py      板子按键测试固件（MicroPython / ESP32-C3，上传为 /main.py）
 upload_main.py      通过串口把固件写入板子（base64 + raw REPL）
 serial_listen.py    串口监听工具（调试用）
+bind_panel.py       频道绑定面板：把对话绑定到 1-6 频道（不跟 AI 交流）
+channel_map.json    频道映射（manual=手工 / auto=自动分配）
 demo_write.py       状态文件演示写入器
 hooks/              agent 自觉上报 waiting 的约定脚本
 docs/               需求规格 / 更新日志 / 路线图 / 硬件方案

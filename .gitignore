@@ -12,6 +12,8 @@ log_state_cache.json
 ptt_result.txt
 ptt_tmp.wav
 test_zh.wav
+channel_map.json
+multi_state_cache.json
 
 # 下载的 MicroPython 固件（README 里有官方地址）
 firmware/*.bin
