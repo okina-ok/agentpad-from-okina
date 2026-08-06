@@ -1,11 +1,12 @@
 """通过串口把 button_test.py 以 base64 写入板子 /main.py（不依赖 ampy）"""
 
 import base64
+import os
 import serial
 import sys
 import time
 
-SRC = r"C:\Users\Win\Documents\Codex\2026-08-06\new-chat-2\work\agentpad\button_test.py"
+SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "button_test.py")
 PORT = "COM5"
 
 with open(SRC, "rb") as fh:

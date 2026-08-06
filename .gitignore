@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 *.log
 serial_capture.txt
+display_state.json
 display_state_v2.json
 log_state_cache.json
 ptt_result.txt

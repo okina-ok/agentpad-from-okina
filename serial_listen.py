@@ -1,7 +1,9 @@
 import serial
 import time
 
-out = r"C:\Users\Win\Documents\Codex\2026-08-06\new-chat-2\work\agentpad\serial_capture.txt"
+import os
+
+out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "serial_capture.txt")
 
 try:
     s = serial.Serial("COM5", 115200, timeout=0.5)
