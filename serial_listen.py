@@ -1,3 +1,11 @@
+"""串口监听工具：把 COM 口收到的内容保存到 serial_capture.txt（调试用）
+
+用法：
+    python serial_listen.py
+
+说明：监听 120 秒内板子输出的所有字符，用于核对按键 JSON 事件是否正常。
+"""
+
 import serial
 import time
 

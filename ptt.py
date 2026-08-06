@@ -138,6 +138,7 @@ def main():
     busy = threading.Event()
 
     def handle_press():
+        # 按下：开始录音（重复按下事件由 Recorder 内部去重）
         try:
             if rec.start():
                 log_result(">>> 录音开始（说话吧）")
@@ -151,11 +152,13 @@ def main():
                 return
             dur = len(data) / RATE
             if dur < 0.25:
+                # 太短的按压缩是误触，不转写
                 log_result(">>> 太短，忽略（%.2fs）" % dur)
                 return
             log_result(">>> 录音结束（%.1fs），转写中..." % dur)
 
             def work():
+                # 转写 + 注入放后台线程，不阻塞主循环继续接收按键事件
                 try:
                     wav = save_wav(data)
                     text = transcribe(model, wav)
