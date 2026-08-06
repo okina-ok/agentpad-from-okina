@@ -19,6 +19,8 @@ import time
 import wave
 
 import numpy as np
+import sounddevice as sd
+from faster_whisper import WhisperModel
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whisper-small")
 RESULT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt_result.txt")
@@ -33,6 +35,17 @@ def log_result(text):
     try:
         with open(RESULT_FILE, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def log_error(exc):
+    import traceback
+
+    text = "!!! ERROR: %s\n%s" % (exc, traceback.format_exc())
+    try:
+        with open(RESULT_FILE, "a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
     except OSError:
         pass
 
@@ -104,34 +117,40 @@ def main():
     busy = threading.Event()
 
     def handle_press():
-        if rec.start():
-            log_result(">>> 录音开始（说话吧）")
+        try:
+            if rec.start():
+                log_result(">>> 录音开始（说话吧）")
+        except Exception as exc:
+            log_error(exc)
 
     def handle_release():
-        data = rec.stop()
-        if data is None:
-            return
-        dur = len(data) / RATE
-        if dur < 0.25:
-            log_result(">>> 太短，忽略（%.2fs）" % dur)
-            return
-        log_result(">>> 录音结束（%.1fs），转写中..." % dur)
+        try:
+            data = rec.stop()
+            if data is None:
+                return
+            dur = len(data) / RATE
+            if dur < 0.25:
+                log_result(">>> 太短，忽略（%.2fs）" % dur)
+                return
+            log_result(">>> 录音结束（%.1fs），转写中..." % dur)
 
-        def work():
-            try:
-                wav = save_wav(data)
-                text = transcribe(model, wav)
-                log_result(">>> 转写结果：" + (text or "（没听清）"))
-            except Exception as exc:
-                log_result(">>> 转写出错：%r" % exc)
-            finally:
-                busy.clear()
+            def work():
+                try:
+                    wav = save_wav(data)
+                    text = transcribe(model, wav)
+                    log_result(">>> 转写结果：" + (text or "（没听清）"))
+                except Exception as exc:
+                    log_error(exc)
+                finally:
+                    busy.clear()
 
-        busy.set()
-        threading.Thread(target=work, daemon=True).start()
+            busy.set()
+            threading.Thread(target=work, daemon=True).start()
+        except Exception as exc:
+            log_error(exc)
 
     if args.demo:
-        log_result("demo 模式：从 stdin 读 {"ev":"key","i":1,"s":1/0}")
+        log_result("demo 模式：从 stdin 读 {'ev':'key','i':1,'s':1/0}")
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -155,6 +174,23 @@ def main():
     while True:
         try:
             chunk = s.read(512).decode("utf-8", errors="replace")
+            if not chunk:
+                continue
+            buf += chunk
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.strip()
+                if not line or not line.startswith("{"):
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("ev") == "key" and ev.get("i") == 1:
+                    if ev.get("s") == 1:
+                        handle_press()
+                    elif ev.get("s") == 0:
+                        handle_release()
         except serial.SerialException:
             log_result("串口断开，重连中...")
             time.sleep(1)
@@ -163,23 +199,8 @@ def main():
             except Exception:
                 continue
             continue
-        if not chunk:
-            continue
-        buf += chunk
-        while "\n" in buf:
-            line, buf = buf.split("\n", 1)
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if ev.get("ev") == "key" and ev.get("i") == 1:
-                if ev.get("s") == 1:
-                    handle_press()
-                elif ev.get("s") == 0:
-                    handle_release()
+        except Exception as exc:
+            log_error(exc)
 
 
 if __name__ == "__main__":
