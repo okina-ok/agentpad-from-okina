@@ -122,9 +122,12 @@ class Simulator(tk.Tk):
                 f *= 0.4
             color = rgb_to_hex(blend(rgb, base, f))
             cell.configure(bg=color)
-            text = f"{info.get('slot', '?')} {info.get('state', '?')}"
+            slot = info.get('slot', '?')
             if fresh in ("suspect", "stale", "offline"):
-                text = f"{info.get('slot', '?')} {fresh}"
+                text = f"{slot} {fresh}"
+            else:
+                name = (info.get('name') or info.get('summary') or '').strip()[:10]
+                text = f"{slot} {name}\n{info.get('state', '?')}" if name else f"{slot} {info.get('state', '?')}"
             cap.configure(text=text, bg=color,
                           fg="#FFFFFF" if f > 0.35 else "#777777")
 

@@ -14,7 +14,7 @@ import os
 import sys
 import time
 
-from log_state import LogStateTracker
+from log_state import MultiLogTracker
 
 STATUS_DIR_DEFAULT = os.path.join(os.path.expanduser("~"), ".agent-status")
 DISPLAY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "display_state_v2.json")
@@ -117,7 +117,8 @@ def read_agent_file(path):
     }
 
 
-def scan(status_dir, tracker=None):
+def scan_files(status_dir):
+    """纯状态文件模式（--no-logwatch）。"""
     agents = []
     for slot in range(1, 7):
         path = os.path.join(status_dir, f"agent-{slot}.json")
@@ -139,43 +140,46 @@ def scan(status_dir, tracker=None):
                 "summary": info["summary"],
             })
         agents.append(entry)
+    return {"agents": agents, "updated": int(time.time())}
 
-    # 数据源合并（1 号键，单 agent 场景），防闪烁规则：
-    # 1) 文件上报的 waiting 最优先（日志检测不到审批）；
-    # 2) 日志真相源其次，一旦采用就单调老化，不再与文件互相覆盖；
-    # 3) 回合结束 = thinking + 有完成响应 + 安静 DONE_QUIET 秒 -> done。
-    if tracker is not None:
-        tracker.poll()
-        file0 = agents[0]
-        if file0["state"] == "waiting" and file0["fresh"] in ("active", "suspect"):
-            pass  # waiting 保持文件来源
-        elif tracker.state in ("thinking", "running", "done", "error") and tracker.state_ts:
-            fresh = log_freshness(tracker.state, tracker.state_ts, tracker.last_event_ts)
-            quiet = time.time() - tracker.last_event_ts
-            fast_done = tracker.last_response_ts and quiet >= DONE_QUIET
-            fallback_done = tracker.last_content_ts and quiet >= DONE_QUIET_CONTENT
-            if tracker.state == "thinking" and (fast_done or fallback_done):
-                agents[0] = {"slot": 1, "state": "done", "fresh": "active",
-                             "color": COLOR_BY_STATE["done"], "effect": EFFECT_BY_STATE["done"],
-                             "ts": int(time.time()), "summary": "log: turn complete (quiet)",
-                             "src": "log"}
-            elif fresh == "offline":
-                agents[0] = {"slot": 1, "state": "idle", "fresh": "offline",
-                             "color": COLOR_BY_STATE["idle"], "effect": "off",
-                             "ts": tracker.state_ts, "summary": "log: idle", "src": "log"}
-            else:
-                agents[0] = {
-                    "slot": 1,
-                    "state": tracker.state,
-                    "fresh": fresh,
-                    "color": COLOR_BY_STATE[tracker.state],
-                    "effect": EFFECT_BY_STATE[tracker.state],
-                    "ts": tracker.state_ts,
-                    "summary": f"log: {tracker.summary}",
-                    "src": "log",
-                }
-        if "src" not in agents[0]:
-            agents[0]["src"] = "file"
+
+def scan(status_dir, tracker=None):
+    """多会话模式：槽位 = 最近活跃的会话，逐个映射状态/颜色/灯效。"""
+    if tracker is None:
+        return scan_files(status_dir)
+    tracker.poll()
+    slots = tracker.get_slots()
+    agents = []
+    active_slot = None
+    for i in range(1, 7):
+        if i <= len(slots):
+            s = slots[i - 1]
+            state = s["state"]
+            fresh = log_freshness(state, s["ts"], s["last_event_ts"])
+            if fresh == "offline":
+                state = "idle"
+            entry = {
+                "slot": i, "state": state, "fresh": fresh,
+                "color": COLOR_BY_STATE[state], "effect": EFFECT_BY_STATE[state],
+                "ts": s["ts"], "summary": s["title"], "name": s["title"], "src": "log",
+            }
+            if s["thread_id"] == tracker.active_tid:
+                active_slot = i
+        else:
+            entry = {"slot": i, "state": "idle", "fresh": "offline",
+                     "color": COLOR_BY_STATE["idle"], "effect": "off", "src": "empty"}
+        agents.append(entry)
+    # 文件 waiting 覆盖到活跃槽位（日志检测不到审批）
+    if active_slot is not None:
+        f0 = read_agent_file(os.path.join(status_dir, "agent-1.json"))
+        if f0 and f0["state"] == "waiting" and freshness(f0["ts"]) in ("active", "suspect"):
+            idx = active_slot - 1
+            agents[idx] = {
+                "slot": active_slot, "state": "waiting", "fresh": "active",
+                "color": COLOR_BY_STATE["waiting"], "effect": EFFECT_BY_STATE["waiting"],
+                "ts": f0["ts"], "summary": "waiting (file)",
+                "name": agents[idx].get("name", ""), "src": "file",
+            }
     return {"agents": agents, "updated": int(time.time())}
 
 
@@ -231,19 +235,19 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(args.status_dir, exist_ok=True)
-    tracker = None if args.no_logwatch else LogStateTracker()
-    debounce = Debounce(DEBOUNCE_SECONDS)
+    tracker = None if args.no_logwatch else MultiLogTracker()
+    debouncers = [Debounce(DEBOUNCE_SECONDS) for _ in range(6)]
 
     def emit():
         payload = scan(args.status_dir, tracker)
         if tracker is not None:
-            a = payload["agents"][0]
-            key = (a["state"], a["fresh"])
-            shown = debounce.update(key, time.time())
-            if shown is not None and shown != key[0]:
-                a["state"] = shown
-                a["color"] = COLOR_BY_STATE[shown]
-                a["effect"] = EFFECT_BY_STATE[shown]
+            for i, a in enumerate(payload["agents"]):
+                key = (a["state"], a["fresh"])
+                shown = debouncers[i].update(key, time.time())
+                if shown is not None and shown != key[0]:
+                    a["state"] = shown
+                    a["color"] = COLOR_BY_STATE[shown]
+                    a["effect"] = EFFECT_BY_STATE[shown]
         with open(DISPLAY_FILE, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False, indent=1)
         return payload
