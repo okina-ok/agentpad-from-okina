@@ -102,6 +102,7 @@ https://hf-mirror.com/Systran/faster-whisper-small/resolve/main/model.bin
 
 - [需求规格](docs/codex-micro-replica-spec-v0.1.md)
 - [更新日志](docs/AgentPad-CHANGELOG.md)
+- [产品决策与迭代看板](docs/product-decisions.md)
 - [用户手册（草稿）](docs/agentpad-user-manual-draft.md)
 - [动手路线图](docs/agentpad-steps.md)
 - [v1 硬件方案](docs/v1-hardware-plan.md)
