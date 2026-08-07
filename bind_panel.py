@@ -20,6 +20,7 @@ import tkinter as tk
 from tkinter import ttk
 
 CHANNEL_MAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "channel_map.json")
+DISPLAY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "display_state_v2.json")
 N_CHANNELS = 6
 
 
@@ -99,6 +100,8 @@ class App(tk.Tk):
         self.label_by_id = {v: k for k, v in self.id_by_label.items()}
         self.manual = load_manual()
         self.vars = {}
+        self.cbs = {}
+        self.cur_labels = {}
 
         tk.Label(self, text="为每个频道选择要绑定的对话；选「自动」= 让守护进程自己分配",
                  font=("Microsoft YaHei UI", 10)).pack(pady=(10, 4))
@@ -119,6 +122,10 @@ class App(tk.Tk):
             )
             cb.pack(side=tk.LEFT, padx=6)
             self.vars[slot] = var
+            self.cbs[slot] = cb
+            cur = ttk.Label(row, text="当前: -", width=34, foreground="#555555")
+            cur.pack(side=tk.LEFT, padx=4)
+            self.cur_labels[slot] = cur
 
         tk.Label(self, text="当前 Codex 对话列表（最近活跃在上）",
                  font=("Microsoft YaHei UI", 9)).pack(anchor=tk.W, padx=12, pady=(8, 2))
@@ -132,10 +139,47 @@ class App(tk.Tk):
                 time.strftime("%m-%d %H:%M", time.localtime(t["recency"])),
             ))
         tree.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+        self.tree = tree
+        ttk.Button(self, text="刷新会话列表", command=self.reload_threads).pack(pady=2)
 
         self.status = tk.Label(self, text="", fg="#0A7D32")
         self.status.pack()
         ttk.Button(self, text="保存绑定", command=self.save).pack(pady=(2, 10))
+        self.after(2000, self.refresh_status)
+
+    def refresh_status(self):
+        """每 2 秒从守护进程的显示文件读当前映射，标在频道行上。"""
+        by_slot = {}
+        try:
+            with open(DISPLAY_FILE, "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+            for a in d.get("agents", []):
+                by_slot[a["slot"]] = (
+                    a.get("name") or a.get("summary") or "",
+                    a.get("state", ""),
+                )
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        for slot, lab in self.cur_labels.items():
+            name, state = by_slot.get(slot, ("", ""))
+            lab.config(text=f"当前: {name or '空闲'} [{state}]")
+        self.after(2000, self.refresh_status)
+
+    def reload_threads(self):
+        """刷新会话列表（新开的对话会出现在这里）。"""
+        self.threads = list_threads(find_state_db())
+        self.id_by_label = {f"{t['title']} ({t['id'][:8]})": t['id'] for t in self.threads}
+        self.label_by_id = {v: k for k, v in self.id_by_label.items()}
+        values = ["自动"] + list(self.id_by_label.keys())
+        for cb in self.cbs.values():
+            cb["values"] = values
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for t in self.threads:
+            self.tree.insert("", tk.END, values=(
+                t["title"],
+                time.strftime("%m-%d %H:%M", time.localtime(t["recency"])),
+            ))
 
     def save(self):
         manual = {}

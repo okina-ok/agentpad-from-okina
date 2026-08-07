@@ -155,15 +155,32 @@ def scan(status_dir, tracker=None):
         if i <= len(slots):
             s = slots[i - 1]
             state = s["state"]
-            fresh = log_freshness(state, s["ts"], s["last_event_ts"])
-            if fresh == "offline":
-                state = "idle"
-            entry = {
-                "slot": i, "state": state, "fresh": fresh,
-                "color": COLOR_BY_STATE[state], "effect": EFFECT_BY_STATE[state],
-                "ts": s["ts"], "summary": s["title"], "name": s["title"],
-                "thread_id": s.get("thread_id", ""), "src": "log",
-            }
+            now = int(time.time())
+            quiet = now - s["last_event_ts"]
+            # done 兜底：thinking 且收到过完成信号 + 安静超时 -> done
+            # （输出流漏判/延迟时的保险，恢复 v0.4 单线程版的双通道判定）
+            done_q = (
+                state == "thinking"
+                and ((s.get("last_response_ts") and quiet >= DONE_QUIET)
+                     or (s.get("last_content_ts") and quiet >= DONE_QUIET_CONTENT))
+            )
+            if done_q:
+                entry = {
+                    "slot": i, "state": "done", "fresh": "active",
+                    "color": COLOR_BY_STATE["done"], "effect": EFFECT_BY_STATE["done"],
+                    "ts": now, "summary": s["title"], "name": s["title"],
+                    "thread_id": s.get("thread_id", ""), "src": "log",
+                }
+            else:
+                fresh = log_freshness(state, s["ts"], s["last_event_ts"])
+                if fresh == "offline":
+                    state = "idle"
+                entry = {
+                    "slot": i, "state": state, "fresh": fresh,
+                    "color": COLOR_BY_STATE[state], "effect": EFFECT_BY_STATE[state],
+                    "ts": s["ts"], "summary": s["title"], "name": s["title"],
+                    "thread_id": s.get("thread_id", ""), "src": "log",
+                }
             if s["thread_id"] == tracker.active_tid:
                 active_slot = i
         else:

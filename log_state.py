@@ -502,9 +502,6 @@ class MultiLogTracker:
                 st.title = self.pool[tid]["title"]
                 st.recency = self.pool[tid]["recency"]
             self.threads[tid] = st
-        # SSE 流（无线程归属）只喂给"最近在动"的活跃会话，避免旧噪音灌错对象
-        if not has_tid and st.last_event_ts and ts - st.last_event_ts > 15:
-            return
         m_sub = re.search(r'submission\.id="(' + TID_FULL_RE.pattern + r')"', body)
         sid = m_sub.group(1) if m_sub is not None else None
         is_real_user = (
@@ -617,6 +614,8 @@ class MultiLogTracker:
                 "state": st.state,
                 "ts": st.state_ts,
                 "last_event_ts": st.last_event_ts,
+                "last_response_ts": st.last_response_ts,
+                "last_content_ts": st.last_content_ts,
                 "title": st.title or st.thread_id[:8],
             })
         return out
