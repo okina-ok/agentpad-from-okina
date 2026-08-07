@@ -16,13 +16,21 @@ NEW_SID = "019f0000-0000-0000-0000-000000000003"
 
 def make_db(path):
     con = sqlite3.connect(path)
-    con.execute("CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER, feedback_log_body TEXT)")
+    con.execute("CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER, target TEXT, feedback_log_body TEXT)")
     return con
 
 
 def insert(con, rows):
     for rid, ts, body in rows:
-        con.execute("INSERT INTO logs (id, ts, feedback_log_body) VALUES (?,?,?)", (rid, ts, body))
+        con.execute("INSERT INTO logs (id, ts, target, feedback_log_body) VALUES (?,?,NULL,?)", (rid, ts, body))
+    con.commit()
+
+
+def insert_t(con, rows):
+    """带 target 列插入（用于回显行过滤测试）。"""
+    for rid, ts, tgt, body in rows:
+        con.execute("INSERT INTO logs (id, ts, target, feedback_log_body) VALUES (?,?,?,?)",
+                    (rid, ts, tgt, body))
     con.commit()
 
 
@@ -116,11 +124,18 @@ def main():
     assert tracker.state == "thinking", tracker.state
     print("3) post-tool reasoning -> thinking OK")
 
-    # 3b) 工具完成行 -> 立即回 thinking（不用等下一批日志）
-    insert(con, [completion_row(25, t0 + 4), giant_cycle_row(26, t0 + 4)])
+    # 3b) "tool call completed" 是工具开始执行的回执（execution_started=true），
+    #     应保持 running，不被拉回 thinking；真正的 reasoning 输出才回 thinking
+    insert(con, [completion_row(25, t0 + 4)])
+    tracker.poll()
+    assert tracker.state == "running", tracker.state
+    insert(con, [giant_cycle_row(26, t0 + 4)])
+    tracker.poll()
+    assert tracker.state == "running", tracker.state
+    insert(con, [reasoning(27, t0 + 4)])
     tracker.poll()
     assert tracker.state == "thinking", tracker.state
-    print("3b) completion/giant rows -> thinking OK")
+    print("3b) tool call completed keeps running; reasoning -> thinking OK")
 
     # 3c) 同一 submission 的后台噪音行（token usage / item_type message / reasoning）
     #     不是用户消息：状态与 last_response_ts 都不该被重置
@@ -218,6 +233,15 @@ def main():
     tracker.poll()
     assert tracker.state == "running", tracker.state
     print("17) tool rows after 3s hold -> running OK")
+
+    # 18) transport 回显行（HTTP 请求体，含历史引用文本）不触发任何状态变化
+    insert_t(con, [(120, t0 + 21, "codex_http_client::transport",
+                    'session_loop{thread_id=%s}: HTTP request body: 历史笔记提到 '
+                    'needs_follow_up=false / tool call completed / response.completed '
+                    '都是纯文本引用，不是事件' % OTHER)])
+    tracker.poll()
+    assert tracker.state == "running", tracker.state
+    print("18) transport echo rows skipped OK")
 
     con.close()
     print("ALL TESTS PASSED")

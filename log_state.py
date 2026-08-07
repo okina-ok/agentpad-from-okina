@@ -46,6 +46,28 @@ TOOL_MARKERS = (
     "tool_name=",                    # app-server dispatch 行
 )
 
+# 回显行目标：codex_http_client::transport 写的是"发给模型的 HTTP 请求体"，
+# 内含历史对话与项目笔记的引用文本（如 needs_follow_up=false、tool call
+# completed、response.completed），不是实时事件。命中这些字符串会重复触发
+# 旧规则造成横跳，必须整体跳过。
+ECHO_TARGETS = {"codex_http_client::transport"}
+
+
+def _iter_logs(con, after_id):
+    """按 id 顺序迭代日志行；兼容无 target 列的旧库/测试库。"""
+    try:
+        cur = con.execute(
+            "SELECT id, ts, target, feedback_log_body FROM logs "
+            "WHERE id > ? ORDER BY id", (after_id,))
+        for rid, ts, tgt, body in cur:
+            yield rid, int(ts), (tgt or ""), (body or "")
+    except sqlite3.OperationalError:
+        cur = con.execute(
+            "SELECT id, ts, feedback_log_body FROM logs "
+            "WHERE id > ? ORDER BY id", (after_id,))
+        for rid, ts, body in cur:
+            yield rid, int(ts), "", (body or "")
+
 
 def set_state(st, state, ts, summary=""):
     st.state = state
@@ -105,7 +127,6 @@ def apply_row(body, st, ts):
     meaningful = False
 
     is_tool = any(m in body for m in TOOL_MARKERS)
-    is_cycle_over = "tool call completed" in body
     is_completed = '"type":"response.completed"' in body
     is_message_item = 'item_type="message"' in body and not is_tool
     m_nf = re.search(r"(?:model_)?needs_follow_up=(\w+)", body)
@@ -123,65 +144,62 @@ def apply_row(body, st, ts):
     if sid is not None:
         st.last_submission_id = sid
 
-    # 1) 工具完成 -> thinking（工具已结束，模型在处理结果；不启用 done）
-    if is_cycle_over:
-        if st.state == "done" and ts - st.state_ts < DONE_HOLD_SECONDS:
-            return False  # done 刚出现，工具完成行是收尾噪音，保持绿
-        st.last_response_ts = 0
-        st.last_content_ts = 0
-        set_state(st, "thinking", ts, "tool completed")
-        meaningful = True
-    # 2) 工具行 -> running
-    elif is_tool:
+    # 1) 工具行 -> running
+    #    注意：app 日志里的 "tool call completed" 是工具开始执行的回执
+    #    （execution_started=true，handler_duration_ms 只是 dispatch 耗时），
+    #    不是工具结束。工具真正结束、模型拿到结果继续生成的标志是下一条
+    #    reasoning 输出（见 #8），所以这里统一视为 running。
+    if is_tool:
         if st.state == "done" and ts - st.state_ts < DONE_HOLD_SECONDS:
             return False  # 同上：done 后的工具行大概率是回合收尾
         st.last_response_ts = 0
         st.last_content_ts = 0
         set_state(st, "running", ts, "tool executing")
         meaningful = True
-    # 3) 响应完成（纯文本回合结束证据）-> 记录完成点；已在 done 则保持绿
+    # 2) 响应完成（纯文本回合结束证据）-> 记录完成点；已在 done 则保持绿
     elif is_completed:
         st.last_response_ts = ts
         if st.state != "done":
             set_state(st, "thinking", ts, "response completed")
         meaningful = True
-    # 4) needs_follow_up=false -> 兜底完成点
+    # 3) needs_follow_up=false -> 兜底完成点
     elif is_turn_end_hint:
         st.last_content_ts = ts
         if st.state != "done":
             set_state(st, "thinking", ts, "turn end hint")
         meaningful = True
-    # 5) needs_follow_up=true -> 撤销兜底完成点
+    # 4) needs_follow_up=true -> 撤销兜底完成点（不改变当前阶段；
+    #    它只是"本轮采样结束、回合还要继续"的信号，工具可能刚派发完，
+    #    当前是思考还是运行由 reasoning 输出 / 工具行决定）
     elif is_midturn_hint:
         st.last_content_ts = 0
-        if st.state != "done":
-            set_state(st, "thinking", ts, "turn continue")
-        meaningful = True
-    # 6) 助手文本消息完成 -> 兜底完成点
+        meaningful = False
+    # 5) 助手文本消息完成 -> 兜底完成点
     elif is_message_item:
         st.last_content_ts = ts
         if st.state != "done":
             set_state(st, "thinking", ts, "message done")
         meaningful = True
-    # 7) 输出阶段（回答文字开始流式出现）-> 直接 done
+    # 6) 输出阶段（回答文字开始流式出现）-> 直接 done
     elif '"type":"response.output_text.delta"' in body:
         st.last_response_ts = ts
         set_state(st, "done", ts, "outputting answer")
         meaningful = True
-    # 8) 真实用户消息 -> 新回合 thinking
+    # 7) 真实用户消息 -> 新回合 thinking
     elif is_real_user:
         st.last_response_ts = 0
         st.last_content_ts = 0
         set_state(st, "thinking", ts, "user input received")
         meaningful = True
-    # 9) thinking：模型生成中
+    # 8) thinking：模型生成中
     elif ('"type":"response.reasoning_text.delta"' in body
           or '"type":"response.created"' in body
-          or '"type":"response.in_progress"' in body):
+          or '"type":"response.in_progress"' in body
+          or 'Output item item_type="reasoning"' in body):
         if st.state != "done":
             set_state(st, "thinking", ts, "thinking")
         meaningful = True
-    # 10) 兜底：output_item.added(function_call)
+    # 9) 兜底：output_item.added(function_call)
     elif re.search(r'"type":"response\.output_item\.added"', body):
         mm = re.search(TOOL_ITEM_RE, body)
         if mm:
@@ -302,11 +320,11 @@ class LogStateTracker:
         """读取 last_id 之后的新日志行并更新状态。"""
         try:
             con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=1.0)
-            cur = con.cursor()
-            cur.execute("SELECT id, ts, feedback_log_body FROM logs WHERE id > ? ORDER BY id", (self.last_id,))
-            for rid, ts, body in cur:
+            for rid, ts, tgt, body in _iter_logs(con, self.last_id):
                 self.last_id = rid
-                self._handle(rid, int(ts), body or "")
+                if tgt in ECHO_TARGETS:
+                    continue  # HTTP 请求体回显行：历史引用文本，不是事件
+                self._handle(rid, ts, body)
             con.close()
         except sqlite3.Error:
             pass  # 日志库暂时不可读（如正在写入），下轮再试
@@ -550,11 +568,11 @@ class MultiLogTracker:
         """增量读取日志库，路由到各线程状态机。"""
         try:
             con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=1.0)
-            cur = con.cursor()
-            cur.execute("SELECT id, ts, feedback_log_body FROM logs WHERE id > ? ORDER BY id", (self.last_id,))
-            for rid, ts, body in cur:
+            for rid, ts, tgt, body in _iter_logs(con, self.last_id):
                 self.last_id = rid
-                self._route(rid, int(ts), body or "")
+                if tgt in ECHO_TARGETS:
+                    continue  # HTTP 请求体回显行：历史引用文本，不是事件
+                self._route(rid, ts, body)
             con.close()
         except sqlite3.Error:
             pass  # 日志库暂时不可读（如正在写入），下轮再试

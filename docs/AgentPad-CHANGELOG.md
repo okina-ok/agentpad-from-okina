@@ -1,7 +1,30 @@
 # AgentPad 更新日志
 
 > 产品：Codex Micro 平替 RGB 状态键盘（v1 = 通道 B 状态文件协议）
-> 当前版本：v0.7.16（2026-08-07，4×4 方格布局定稿）
+> 当前版本：v0.7.17（2026-08-07，修 thinking/running 反了）
+
+## v0.7.17 · 2026-08-07 —— 修 thinking/running 反了：工具信号语义纠正 + 回显行过滤
+
+### 修复
+- 纠正 "tool call completed" 的语义：日志里它是工具**开始执行**的回执
+  （`execution_started=true`，`handler_duration_ms` 只是 dispatch 耗时），
+  不是工具结束。原来被当作"工具完成 -> thinking"，导致工具真正在跑时灯反
+  而是紫的；现在与工具行一样按 running 处理。
+- thinking 信号补齐：DeepSeek 等构建不写 SSE reasoning 行，但会写
+  `Output item item_type="reasoning"`（模型正在生成推理），现作为 thinking 信号。
+- `needs_follow_up=true` 不再把状态拉回 thinking（它只是"回合还要继续"的信号，
+  常在工具刚派发完时出现，会制造 thinking/running 横跳）；只撤销 done 兜底。
+- 过滤 `codex_http_client::transport` 回显行：这类行是发给模型的 HTTP 请求体，
+  内含历史对话/项目笔记对旧事件字符串的引用（needs_follow_up=false、
+  tool call completed、response.completed 等），会重复触发旧规则；现在整体跳过。
+- 效果：thinking（紫）只由 reasoning 输出 / SSE 推理行驱动，running（青）
+  只由工具行驱动，工具执行期间不再被拉回紫，状态与真实阶段一一对应。
+
+### 测试
+- 状态机单测扩到 18 项（新增：工具完成回执保持 running、transport 回显行跳过），
+  全部通过；频道绑定 10 项通过。
+- 用真实日志回放"构建酷炫键盘官网"频道：用户输入 -> thinking -> 工具行 -> running
+  -> reasoning 输出 -> thinking …… 与工具/推理事件一一对应。
 
 ## v0.7.16 · 2026-08-07 —— 4×4 方格布局定稿
 
