@@ -38,7 +38,9 @@ def find_windows(title_part):
 
 def inject_text(text, title="ChatGPT"):
     # 1) 收起置顶的模拟器，避免挡住输入区
-    for hwnd, _ in find_windows("AgentPad 模拟器"):
+    #    标题匹配用 "AgentPad"：新模拟器标题是 "AgentPad v1 模拟器 · 4×4 布局"，
+    #    不再包含连续串 "AgentPad 模拟器"。
+    for hwnd, _ in find_windows("AgentPad"):
         win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
 
     # 2) 找 Codex 桌面端窗口

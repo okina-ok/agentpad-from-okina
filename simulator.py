@@ -17,10 +17,14 @@
 import json
 import math
 import os
+import subprocess
+import sys
+import threading
 import tkinter as tk
 
 DISPLAY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "display_state_v2.json")
+PTT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt.py")
 
 # ---------------- 布局常量（想微调键位尺寸/坐标，只改这里） ----------------
 BG = "#111111"
@@ -32,6 +36,10 @@ ACCENT = "#F59E0B"     # 确定 / 强调
 DANGER = "#F87171"     # 停止
 VOICE_BG = "#0B2E40"   # 语音大键
 VOICE_FG = "#7DD3FC"
+VOICE_REC_BG = "#7F1D1D"   # 录音中
+VOICE_REC_FG = "#FFFFFF"
+VOICE_ERR_BG = "#3F1D1D"   # PTT 异常
+VOICE_ERR_FG = "#FCA5A5"
 SCREEN_BG = "#0A1420"
 SCREEN_FG = "#7CFC00"
 SCREEN_DIM = "#58A6FF"
@@ -92,12 +100,21 @@ class Simulator(tk.Tk):
         self.knob_canvas = None
         self.screen_line1 = None
         self.screen_line2 = None
+        self.voice_cell = None
+        self.voice_cap = None
+        self.voice_sub = None
         self.last_payload = None
         self.t = 0.0
+        # ---- PTT 子进程（复用 ptt.py --demo，与实体按键同一条链路）----
+        self.ptt_proc = None
+        self.ptt_ready = False
+        self.ptt_state = "loading"   # loading / ready / recording / transcribing / error
         self.build_ui()
         width = GRID * KEY_W + (GRID - 1) * GAP + 24
         height = 4 * KEY_H + 3 * GAP + 88  # 标题 + 图例 + 留白
         self.geometry(f"{width}x{height}")
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._spawn_ptt()
         self.after(int(1000 / FPS), self.tick)
 
     # ---------------- UI 搭建 ----------------
@@ -158,10 +175,17 @@ class Simulator(tk.Tk):
                          highlightbackground="#155E75", highlightthickness=2)
         voice.grid(row=3, column=1, columnspan=2, padx=GAP // 2, pady=GAP // 2)
         voice.pack_propagate(False)
-        tk.Label(voice, text="语音输入", bg=VOICE_BG, fg=VOICE_FG,
-                 font=("Microsoft YaHei UI", 15, "bold")).pack(pady=(12, 0))
-        tk.Label(voice, text="按住说话 → 松开进对话框", bg=VOICE_BG, fg="#4B8BA8",
-                 font=("Microsoft YaHei UI", 8)).pack(pady=(4, 0))
+        self.voice_cell = voice
+        self.voice_cap = tk.Label(voice, text="语音输入", bg=VOICE_BG, fg=VOICE_FG,
+                                  font=("Microsoft YaHei UI", 15, "bold"))
+        self.voice_cap.pack(pady=(12, 0))
+        self.voice_sub = tk.Label(voice, text="按住说话 → 松开进对话框", bg=VOICE_BG,
+                                  fg="#4B8BA8", font=("Microsoft YaHei UI", 8))
+        self.voice_sub.pack(pady=(4, 0))
+        # 按住 = 按下实体按键，松开 = 松开实体按键（事件与 ptt.py --demo 一致）
+        for w in (voice, self.voice_cap, self.voice_sub):
+            w.bind("<ButtonPress-1>", self._voice_press)
+            w.bind("<ButtonRelease-1>", self._voice_release)
 
         legend = tk.Label(
             self,
@@ -182,6 +206,7 @@ class Simulator(tk.Tk):
             self.last_payload = payload
         if self.last_payload:
             self.render(self.last_payload)
+        self._refresh_voice()
         self.after(int(1000 / FPS), self.tick)
 
     def render(self, payload):
@@ -260,6 +285,94 @@ class Simulator(tk.Tk):
         c.create_oval(cx - 5, cy - 5, cx + 5, cy + 5, fill="#DDDDDD", outline="")
         c.create_text(cx, cy + r + 12, text="强度", fill=TEXT_DIM,
                       font=("Microsoft YaHei UI", 9))
+
+    # ---------------- PTT 语音（复用 ptt.py --demo，与实体按键同一条链路） ----------------
+    def _spawn_ptt(self):
+        """启动 ptt.py --demo：从 stdin 读按键事件，与 ESP32 串口模式共用处理函数。"""
+        try:
+            self.ptt_proc = subprocess.Popen(
+                [sys.executable, PTT_SCRIPT, "--demo"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            self.ptt_state = "error"
+            print("PTT spawn failed:", exc)
+            return
+        threading.Thread(target=self._ptt_reader, daemon=True).start()
+
+    def _ptt_reader(self):
+        """读 ptt.py 输出，跟踪就绪/转写/错误状态。"""
+        try:
+            for line in self.ptt_proc.stdout:
+                line = line.strip()
+                if "PTT 就绪" in line or "model ready" in line:
+                    self.ptt_ready = True
+                    self.ptt_state = "ready"
+                elif "转写中" in line:
+                    self.ptt_state = "transcribing"
+                elif "已填入" in line or "太短" in line or "没听清" in line:
+                    self.ptt_state = "ready"
+                elif "ERROR" in line or "Traceback" in line:
+                    self.ptt_state = "error"
+        except Exception:
+            self.ptt_state = "error"
+
+    def _write_ptt(self, line):
+        try:
+            self.ptt_proc.stdin.write(line + "\n")
+            self.ptt_proc.stdin.flush()
+        except Exception:
+            self.ptt_state = "error"
+
+    def _voice_press(self, _ev=None):
+        if not self.ptt_ready:
+            return  # 模型未就绪，忽略（界面会显示"模型加载中"）
+        if self.ptt_state == "transcribing":
+            return  # 上一段还在转写，避免同时录两段
+        self._write_ptt('{"ev":"key","i":1,"s":1}')
+        self.ptt_state = "recording"
+
+    def _voice_release(self, _ev=None):
+        if self.ptt_state == "recording":
+            self._write_ptt('{"ev":"key","i":1,"s":0}')
+            self.ptt_state = "transcribing"
+
+    def _refresh_voice(self):
+        """按 PTT 状态刷新语音大键外观（20fps 由 tick 调用）。"""
+        cell, cap, sub = self.voice_cell, self.voice_cap, self.voice_sub
+        if cell is None:
+            return
+        if self.ptt_state == "recording":
+            cap.configure(text="录音中…", bg=VOICE_REC_BG, fg=VOICE_REC_FG)
+            sub.configure(text="松开结束并转写", bg=VOICE_REC_BG, fg="#FECACA")
+            cell.configure(bg=VOICE_REC_BG, highlightbackground="#B91C1C")
+        elif self.ptt_state == "transcribing":
+            cap.configure(text="转写中…", bg=VOICE_BG, fg=VOICE_FG)
+            sub.configure(text="正在转成文字，请稍候", bg=VOICE_BG, fg="#4B8BA8")
+            cell.configure(bg=VOICE_BG, highlightbackground="#155E75")
+        elif self.ptt_state == "error":
+            cap.configure(text="PTT 异常", bg=VOICE_ERR_BG, fg=VOICE_ERR_FG)
+            sub.configure(text="详情见 ptt_result.txt", bg=VOICE_ERR_BG, fg="#FDA4AF")
+            cell.configure(bg=VOICE_ERR_BG, highlightbackground="#7F1D1D")
+        elif not self.ptt_ready:
+            cap.configure(text="语音输入", bg=VOICE_BG, fg="#5B8EA8")
+            sub.configure(text="模型加载中…", bg=VOICE_BG, fg="#4B8BA8")
+            cell.configure(bg=VOICE_BG, highlightbackground="#155E75")
+        else:
+            cap.configure(text="语音输入", bg=VOICE_BG, fg=VOICE_FG)
+            sub.configure(text="按住说话 → 松开进对话框", bg=VOICE_BG, fg="#4B8BA8")
+            cell.configure(bg=VOICE_BG, highlightbackground="#155E75")
+
+    def _on_close(self):
+        if self.ptt_proc is not None:
+            try:
+                self.ptt_proc.terminate()
+            except Exception:
+                pass
+        self.destroy()
 
 
 if __name__ == "__main__":
