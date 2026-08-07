@@ -20,9 +20,9 @@ STATUS_DIR_DEFAULT = os.path.join(os.path.expanduser("~"), ".agent-status")
 DISPLAY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "display_state_v2.json")
 RUN_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "daemon_run.log")
 
-ACTIVE_AFTER = 5        # 5 秒内算活跃
-SUSPECT_AFTER = 15      # 5~15 秒算可疑
-OFFLINE_AFTER = 60      # 超过 60 秒算离线
+ACTIVE_AFTER = 30       # 30 秒内有活动算活跃（心跳 5-15 秒一次，避免亮度闪烁）
+SUSPECT_AFTER = 60      # 30~60 秒算可疑
+OFFLINE_AFTER = 180     # 超过 180 秒算离线
 RUNNING_ACTIVE = 300    # 工具执行最长可视作活跃（秒）
 DONE_ACTIVE = 60        # done 保持明亮的时间（秒）
 DEBOUNCE_SECONDS = 0.5  # 回合内状态防抖（秒）——分类已可靠，大幅缩短切换延迟
