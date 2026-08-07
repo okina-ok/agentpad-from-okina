@@ -28,6 +28,7 @@ DONE_ACTIVE = 60        # done 保持明亮的时间（秒）
 DEBOUNCE_SECONDS = 0.5  # 回合内状态防抖（秒）——分类已可靠，大幅缩短切换延迟
 DONE_QUIET = 1.0        # 回合结束判定：thinking 且安静这么久才算 done（秒）
 DONE_QUIET_CONTENT = 5.0  # done 兜底：只有内容结束信号（无 response.completed）时的安静时长
+DONE_QUIET_BG = 2.0     # 后台会话 done 兜底：无实时流，缩短安静时长提升响应
 
 VALID_STATES = {"thinking", "running", "waiting", "done", "error", "idle"}
 
@@ -157,12 +158,14 @@ def scan(status_dir, tracker=None):
             state = s["state"]
             now = int(time.time())
             quiet = now - s["last_event_ts"]
+            is_active = s["thread_id"] == tracker.active_tid
             # done 兜底：thinking 且收到过完成信号 + 安静超时 -> done
             # （输出流漏判/延迟时的保险，恢复 v0.4 单线程版的双通道判定）
             done_q = (
                 state == "thinking"
                 and ((s.get("last_response_ts") and quiet >= DONE_QUIET)
-                     or (s.get("last_content_ts") and quiet >= DONE_QUIET_CONTENT))
+                     or (s.get("last_content_ts") and quiet >=
+                         (DONE_QUIET_CONTENT if is_active else DONE_QUIET_BG)))
             )
             # 点击/激活产生的假 user_input：只有一条 dispatch、之后 10 秒无后续活动 -> 回空闲
             click_noise = (

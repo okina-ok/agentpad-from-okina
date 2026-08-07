@@ -519,6 +519,20 @@ class MultiLogTracker:
         has_tid = tid is not None
         if not has_tid:
             tid = self.active_tid
+            if tid:
+                ast = self.threads.get(tid)
+                now = time.time()
+                # 活跃会话已安静超 10 秒、且另有会话近期在活动：
+                # SSE 流跟随后者，让后台会话也能吃到自己的实时流（输出即变绿）
+                if ast and ast.last_event_ts and now - ast.last_event_ts > 10:
+                    best = None
+                    for cand in self.threads.values():
+                        if cand.thread_id == tid or not cand.last_event_ts:
+                            continue
+                        if best is None or cand.last_event_ts > best.last_event_ts:
+                            best = cand
+                    if best and now - best.last_event_ts < 30:
+                        tid = best.thread_id
         if not tid:
             return
         st = self.threads.get(tid)
