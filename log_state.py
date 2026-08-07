@@ -30,6 +30,7 @@ CHANNEL_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cha
 
 TOOL_ITEM_RE = r'"item":\{.*?"type":"(function_call|custom_tool_call|web_search_call)"'
 TID_FULL_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+DONE_HOLD_SECONDS = 3.0  # 输出（done）后 3 秒内，收尾的工具行不抢状态，避免回合结束还横跳
 
 # 工具行标记：出现任意一个即视为"工具正在执行"（running）。
 # 注意不要用裸词 function_call，避免 reasoning 文本误伤。
@@ -124,12 +125,16 @@ def apply_row(body, st, ts):
 
     # 1) 工具完成 -> thinking（工具已结束，模型在处理结果；不启用 done）
     if is_cycle_over:
+        if st.state == "done" and ts - st.state_ts < DONE_HOLD_SECONDS:
+            return False  # done 刚出现，工具完成行是收尾噪音，保持绿
         st.last_response_ts = 0
         st.last_content_ts = 0
         set_state(st, "thinking", ts, "tool completed")
         meaningful = True
     # 2) 工具行 -> running
     elif is_tool:
+        if st.state == "done" and ts - st.state_ts < DONE_HOLD_SECONDS:
+            return False  # 同上：done 后的工具行大概率是回合收尾
         st.last_response_ts = 0
         st.last_content_ts = 0
         set_state(st, "running", ts, "tool executing")

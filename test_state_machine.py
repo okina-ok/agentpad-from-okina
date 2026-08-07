@@ -207,11 +207,17 @@ def main():
     assert tracker.state == "thinking", tracker.state
     print("15) new user msg after done -> thinking OK")
 
-    # 16) 输出中来了工具行 -> 立即转 running
+    # 16) 输出后 3 秒内的工具行 = 回合收尾噪音，保持 done（不横跳）
     insert(con, [reasoning_row(96, t0 + 15), output_text(97, t0 + 15)] + tool_rows(98, t0 + 15, tid=OTHER, sid="019f0000-0000-0000-0000-000000000004"))
     tracker.poll()
+    assert tracker.state == "done", tracker.state
+    print("16) tool rows within 3s of done -> stays done OK")
+
+    # 17) 输出后超过 3 秒的工具行 -> 转 running（真正的新活动）
+    insert(con, tool_rows(110, t0 + 20, tid=OTHER, sid="019f0000-0000-0000-0000-000000000004"))
+    tracker.poll()
     assert tracker.state == "running", tracker.state
-    print("16) tool row during output -> running OK")
+    print("17) tool rows after 3s hold -> running OK")
 
     con.close()
     print("ALL TESTS PASSED")
