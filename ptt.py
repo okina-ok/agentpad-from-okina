@@ -128,7 +128,11 @@ def run_inject(text):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         lines = (p.stdout or "").strip().splitlines()
-        return p.returncode == 0, lines[-1] if lines else "rc=%d" % p.returncode
+        detail = lines[-1] if lines else "rc=%d" % p.returncode
+        err_lines = (p.stderr or "").strip().splitlines()
+        if p.returncode != 0 and err_lines:
+            detail += " | " + err_lines[-1]
+        return p.returncode == 0, detail
     except Exception as exc:
         return False, repr(exc)
 
