@@ -186,16 +186,20 @@ def inject_text(text, title="ChatGPT"):
 
 def inject_into_composer(text, hwnd, rect, agent_wins=()):
     """定位输入框 -> 点击 -> 粘贴 -> 验证。"""
-    # 4) 定位输入框
+    # 4) 定位输入框。默认几何点击（快且稳）：UIA 在你的环境里每次挂起，
+    #    只会在设置 AGENTPAD_UIA=1 时尝试（带 1.5s 超时）。
     cx, cy = None, None
-    found = _uia_find_composer(hwnd, rect)
-    if found.get("xy"):
-        cx, cy = found["xy"]
-        print("composer control:", repr(found.get("name")), (cx, cy))
-    elif found.get("err"):
-        print("uia locate failed:", found["err"])
+    if os.environ.get("AGENTPAD_UIA") == "1":
+        found = _uia_find_composer(hwnd, rect)
+        if found.get("xy"):
+            cx, cy = found["xy"]
+            print("composer control:", repr(found.get("name")), (cx, cy))
+        elif found.get("err"):
+            print("uia locate failed:", found["err"])
+        else:
+            print("uia locate timeout, use geometry fallback")
     else:
-        print("uia locate timeout, use geometry fallback")
+        print("uia disabled, geometry click")
     if cx is None:
         cx = (rect[0] + rect[2]) // 2
         cy = rect[3] - 100
@@ -222,21 +226,25 @@ def inject_into_composer(text, hwnd, rect, agent_wins=()):
         _restore_moved(moved)
         return False
 
-    # 6) 验证：读回输入框内容
+    # 6) 验证：读回输入框内容（仅 AGENTPAD_UIA=1 时；几何模式不做验证）
     ok = False
-    got = _uia_read_composer(hwnd, win32gui.GetWindowRect(hwnd))
-    val = got.get("val")
-    if val is not None:
-        ok = text in val
-        if ok:
-            print("verify OK")
+    if os.environ.get("AGENTPAD_UIA") == "1":
+        got = _uia_read_composer(hwnd, win32gui.GetWindowRect(hwnd))
+        val = got.get("val")
+        if val is not None:
+            ok = text in val
+            if ok:
+                print("verify OK")
+            else:
+                print("verify FAIL, composer:", repr(val[:60]))
+        elif got.get("err"):
+            print("verify skipped:", got["err"])
+            ok = True
         else:
-            print("verify FAIL, composer:", repr(val[:60]))
-    elif got.get("err"):
-        print("verify skipped:", got["err"])
-        ok = True
+            print("verify skipped (uia timeout)")
+            ok = True
     else:
-        print("verify skipped (uia timeout)")
+        print("verify skipped (geometry mode)")
         ok = True
 
     _restore_moved(moved)

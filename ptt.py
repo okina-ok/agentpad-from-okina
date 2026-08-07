@@ -111,9 +111,23 @@ def save_wav(data):
 
 def transcribe(model, wav_path):
     segments, _info = model.transcribe(
-        wav_path, language="zh", vad_filter=True, beam_size=5
+        wav_path, language="zh", vad_filter=True, beam_size=5,
+        initial_prompt="以下是普通话的简体中文转写：",
     )
-    return "".join(seg.text for seg in segments).strip()
+    text = "".join(seg.text for seg in segments).strip()
+    return _to_simplified(text)
+
+
+def _to_simplified(text):
+    """繁体 -> 简体。whisper 会按口音/语域输出繁体（如 聽/怎麼/寶貝），
+    OpenCC 兜底转简；未安装 OpenCC 时原样返回。"""
+    if not text:
+        return text
+    try:
+        import opencc
+        return opencc.OpenCC("t2s").convert(text)
+    except Exception:
+        return text
 
 
 def run_inject(text):
