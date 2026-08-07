@@ -32,6 +32,16 @@ WAV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt_tmp.wav
 RATE = 16000
 
 
+def _force_utf8_stdio():
+    """stdout/stderr 统一 UTF-8：子进程（模拟器）按 UTF-8 读管道，
+    否则中文状态标记在 GBK 编码下无法被识别，UI 会卡在"转写中"。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def log_result(text):
     line = "[%s] %s" % (time.strftime("%H:%M:%S"), text)
     print(line, flush=True)
@@ -46,6 +56,7 @@ def log_error(exc):
     import traceback
 
     text = "!!! ERROR: %s\n%s" % (exc, traceback.format_exc())
+    print(text, flush=True)  # 同时打到 stdout，让模拟器能识别异常状态
     try:
         with open(RESULT_FILE, "a", encoding="utf-8") as fh:
             fh.write(text + "\n")
@@ -123,6 +134,7 @@ def run_inject(text):
 
 
 def main():
+    _force_utf8_stdio()
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", default="COM5")
     ap.add_argument("--model", default=MODEL_DIR)

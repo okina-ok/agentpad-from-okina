@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 
 DISPLAY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -109,6 +110,7 @@ class Simulator(tk.Tk):
         self.ptt_proc = None
         self.ptt_ready = False
         self.ptt_state = "loading"   # loading / ready / recording / transcribing / error
+        self.ptt_busy_since = 0.0    # 转写开始时间（超时兜底用）
         self.build_ui()
         width = GRID * KEY_W + (GRID - 1) * GAP + 24
         height = 4 * KEY_H + 3 * GAP + 88  # 标题 + 图例 + 留白
@@ -313,7 +315,9 @@ class Simulator(tk.Tk):
                     self.ptt_state = "ready"
                 elif "转写中" in line:
                     self.ptt_state = "transcribing"
-                elif "已填入" in line or "太短" in line or "没听清" in line:
+                    self.ptt_busy_since = time.time()
+                elif ("转写结果" in line or "已填入" in line or "注入失败" in line
+                      or "太短" in line or "没听清" in line):
                     self.ptt_state = "ready"
                 elif "ERROR" in line or "Traceback" in line:
                     self.ptt_state = "error"
@@ -339,12 +343,17 @@ class Simulator(tk.Tk):
         if self.ptt_state == "recording":
             self._write_ptt('{"ev":"key","i":1,"s":0}')
             self.ptt_state = "transcribing"
+            self.ptt_busy_since = time.time()
 
     def _refresh_voice(self):
         """按 PTT 状态刷新语音大键外观（20fps 由 tick 调用）。"""
         cell, cap, sub = self.voice_cell, self.voice_cap, self.voice_sub
         if cell is None:
             return
+        # 兜底：转写超过 60 秒还没回音（丢行/崩溃），强制回就绪，避免 UI 卡死
+        if (self.ptt_state == "transcribing" and self.ptt_busy_since
+                and time.time() - self.ptt_busy_since > 60):
+            self.ptt_state = "ready"
         if self.ptt_state == "recording":
             cap.configure(text="录音中…", bg=VOICE_REC_BG, fg=VOICE_REC_FG)
             sub.configure(text="松开结束并转写", bg=VOICE_REC_BG, fg="#FECACA")
