@@ -1,7 +1,29 @@
 # AgentPad 更新日志
 
 > 产品：Codex Micro 平替 RGB 状态键盘（v1 = 通道 B 状态文件协议）
-> 当前版本：v0.7.26（2026-08-07，确定键 = 发送）
+> 当前版本：v0.7.27（2026-08-07，确定键走 Codex 流接口，告别点击）
+
+## v0.7.27 · 2026-08-07 —— 确定键改走 Codex CLI 流接口（无 UI 自动化）
+
+### 新增
+- 找到并打通 Codex 的流接口：app 线程与 CLI 共用 ~/.codex/sessions 下的
+  rollout 文件，`codex exec resume <thread_id> <text>` 可直接恢复线程并发消息，
+  完全不需要点击/剪贴板/UIA。
+- 新增 codex_send.py：读状态守护进程的 active_tid 定位当前活跃线程，
+  把最近一次语音转写文本发过去；回合开始即返回（后台继续执行），
+  用守护线程保持管道打开，子进程可独立跑完回合。
+- 模拟器"确定"键接入：记录最近转写文本，点击后直接走流接口发送；
+  目标线程正在 thinking/running/waiting 时拒绝（防止双 agent 写同一会话）。
+
+### 实测
+- CLI 发送 0.3s 进入执行；三次真实回合均完成（agent 回复 OK ✅ / 收到。），
+  rollout 文件完整记录 user_message + agent_message + task_complete；
+- 中文经 UTF-8 来源发送无乱码（此前测试乱码是 PowerShell 管道问题）。
+
+### 备注
+- 逆向得到的 IPC 协议参考保留在 _proto/（Codex app-server 协议 TS 绑定）：
+  命名管道 \\.\pipe\codex-ipc 是 follower 路由器，app-server 本体走 stdio，
+  turn/start 方法将来若 app-server 暴露控制套接字可直接调用。
 
 ## v0.7.26 · 2026-08-07 —— "确定"键 = 发送
 

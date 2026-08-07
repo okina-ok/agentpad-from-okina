@@ -108,6 +108,7 @@ class Simulator(tk.Tk):
         self.confirm_cap = None
         self.confirm_sub = None
         self.confirm_busy = False
+        self.last_voice_text = ""
         self.last_payload = None
         self.t = 0.0
         # ---- PTT 子进程（复用 ptt.py --demo，与实体按键同一条链路）----
@@ -327,6 +328,8 @@ class Simulator(tk.Tk):
                 elif ("转写结果" in line or "已填入" in line or "注入失败" in line
                       or "太短" in line or "没听清" in line):
                     self.ptt_state = "ready"
+                if "转写结果" in line and "：" in line:
+                    self.last_voice_text = line.split("：", 1)[1].strip()
                 elif "ERROR" in line or "Traceback" in line:
                     self.ptt_state = "error"
         except Exception:
@@ -401,14 +404,28 @@ class Simulator(tk.Tk):
 
     def _do_send(self):
         try:
-            import inject_text
-            ok = inject_text.send_enter()
+            import codex_send
+            # 目标线程正在跑（thinking/running/waiting）时拒绝，避免双 agent 写同一会话
+            tid = codex_send.active_thread_id()
+            busy = False
+            if self.last_payload and tid:
+                for a in self.last_payload.get("agents", []):
+                    if a.get("thread_id") == tid and a.get("state") in (
+                            "thinking", "running", "waiting"):
+                        busy = True
+                        break
+            if busy:
+                ok, detail = False, "目标线程正在执行，稍后再发"
+            else:
+                ok, detail = codex_send.send_text(self.last_voice_text, tid)
+            print("send:", detail)
         except Exception as exc:
             print("send error:", exc)
             ok = False
+            detail = repr(exc)
         status = "已发送" if ok else "发送失败"
         color = "#4ADE80" if ok else "#F87171"
-        sub = "发送成功" if ok else "点击重试"
+        sub = detail if not ok else "点击可再发"
         self.after(0, lambda: self._set_confirm_text(status, sub, color))
         self.after(2000, self._reset_confirm_text)
 
