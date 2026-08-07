@@ -164,11 +164,24 @@ def scan(status_dir, tracker=None):
                 and ((s.get("last_response_ts") and quiet >= DONE_QUIET)
                      or (s.get("last_content_ts") and quiet >= DONE_QUIET_CONTENT))
             )
+            # 点击/激活产生的假 user_input：只有一条 dispatch、之后 10 秒无后续活动 -> 回空闲
+            click_noise = (
+                state == "thinking"
+                and not (s.get("last_response_ts") or s.get("last_content_ts"))
+                and quiet >= 10
+            )
             if done_q:
                 entry = {
                     "slot": i, "state": "done", "fresh": "active",
                     "color": COLOR_BY_STATE["done"], "effect": EFFECT_BY_STATE["done"],
                     "ts": now, "summary": s["title"], "name": s["title"],
+                    "thread_id": s.get("thread_id", ""), "src": "log",
+                }
+            elif click_noise:
+                entry = {
+                    "slot": i, "state": "idle", "fresh": "stale",
+                    "color": COLOR_BY_STATE["idle"], "effect": EFFECT_BY_STATE["idle"],
+                    "ts": s["ts"], "summary": s["title"], "name": s["title"],
                     "thread_id": s.get("thread_id", ""), "src": "log",
                 }
             else:

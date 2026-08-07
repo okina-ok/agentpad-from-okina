@@ -366,6 +366,7 @@ class MultiLogTracker:
         self._cm_mtime = -1.0
         self._cm = {"manual": {}, "auto": {}}
         self._last_auto = None
+        self._pool_refresh_ts = 0.0
         self._seq = 0
         self.state_db_path = ""
         self._find_state_db(state_db_path)
@@ -411,6 +412,32 @@ class MultiLogTracker:
                     "pinned": bool(pinned),
                 }
             con.close()
+        except sqlite3.Error:
+            pass
+
+    def _maybe_refresh_pool(self):
+        """定期重读 app 线程表，让新开的对话及时进入候选池。"""
+        if time.time() - self._pool_refresh_ts < 30:
+            return
+        self._pool_refresh_ts = time.time()
+        if not self.state_db_path:
+            return
+        try:
+            con = sqlite3.connect(f"file:{self.state_db_path}?mode=ro", uri=True, timeout=1)
+            cur = con.cursor()
+            cur.execute(
+                "SELECT id, title, COALESCE(name,''), recency_at, updated_at, is_pinned "
+                "FROM threads WHERE archived = 0"
+            )
+            fresh = {}
+            for tid, title, name, recency_at, updated_at, pinned in cur.fetchall():
+                fresh[tid] = {
+                    "title": (name or title or tid[:8])[:12],
+                    "recency": max(recency_at or 0, updated_at or 0),
+                    "pinned": bool(pinned),
+                }
+            con.close()
+            self.pool.update(fresh)  # 新增/更新；不删除，保持既有分配稳定
         except sqlite3.Error:
             pass
 
@@ -484,6 +511,7 @@ class MultiLogTracker:
             con.close()
         except sqlite3.Error:
             pass  # 日志库暂时不可读（如正在写入），下轮再试
+        self._maybe_refresh_pool()
         self._save_cache()
 
     def _route(self, rid, ts, body):
@@ -552,12 +580,13 @@ class MultiLogTracker:
             placed.add(tid)
             self.slot_map[tid] = slot
 
-        # 2) 自动候选：app 会话池，或日志里 6 小时内活跃的会话；手工绑定的不再参与
+        # 2) 自动候选：只认 App 会话列表（state 库 threads 表）；
+        #    日志里见过但不在列表里的（影子/预览线程）不占槽位
         candidates = [
             st for st in self.threads.values()
             if TID_FULL_RE.fullmatch(st.thread_id)
             and st.thread_id not in manual.values()
-            and (st.thread_id in self.pool or st.recency > now - 6 * 3600)
+            and st.thread_id in self.pool
         ]
         candidates.sort(key=lambda st: (-st.recency, st.seq))
 

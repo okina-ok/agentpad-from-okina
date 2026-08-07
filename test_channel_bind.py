@@ -17,8 +17,8 @@ def mk_tracker(tmp):
     ls.CHANNEL_MAP_FILE = os.path.join(tmp, "channel_map.json")
     t = ls.MultiLogTracker(db_path=os.path.join(tmp, "none.sqlite"),
                            state_db_path="", cache_path=os.path.join(tmp, "cache.json"))
-    t.pool = {tid(i): {"title": f"会话{i}", "recency": 1000 + i, "pinned": False}
-              for i in range(1, 9)}
+    t.pool = {tid(i): {"title": f"会话{i}", "recency": BASE + i, "pinned": False}
+              for i in range(1, 13)}
     t.active_tid = tid(8)
     # 建 8 个线程状态，recency 按序号递增（8 最新）
     for i in range(1, 9):
