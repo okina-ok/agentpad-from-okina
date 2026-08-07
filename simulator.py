@@ -104,6 +104,10 @@ class Simulator(tk.Tk):
         self.voice_cell = None
         self.voice_cap = None
         self.voice_sub = None
+        self.confirm_cell = None
+        self.confirm_cap = None
+        self.confirm_sub = None
+        self.confirm_busy = False
         self.last_payload = None
         self.t = 0.0
         # ---- PTT 子进程（复用 ptt.py --demo，与实体按键同一条链路）----
@@ -172,6 +176,10 @@ class Simulator(tk.Tk):
                              font=("Microsoft YaHei UI", 7))
             sub_l.pack(pady=(2, 0))
             self.custom_frames.append((cell, cap, sub_l))
+            if label == "确定":
+                self.confirm_cell, self.confirm_cap, self.confirm_sub = cell, cap, sub_l
+                for w in (cell, cap, sub_l):
+                    w.bind("<ButtonRelease-1>", self._confirm_press)
 
         voice = tk.Frame(grid, width=2 * KEY_W + GAP, height=KEY_H, bg=VOICE_BG,
                          highlightbackground="#155E75", highlightthickness=2)
@@ -382,6 +390,36 @@ class Simulator(tk.Tk):
             except Exception:
                 pass
         self.destroy()
+
+    # ---------------- 确定键：发送（复用 inject_text.send_enter） ----------------
+    def _confirm_press(self, _ev=None):
+        if self.confirm_busy:
+            return
+        self.confirm_busy = True
+        self._set_confirm_text("发送中…", "正在发送", "#FCD34D")
+        threading.Thread(target=self._do_send, daemon=True).start()
+
+    def _do_send(self):
+        try:
+            import inject_text
+            ok = inject_text.send_enter()
+        except Exception as exc:
+            print("send error:", exc)
+            ok = False
+        status = "已发送" if ok else "发送失败"
+        color = "#4ADE80" if ok else "#F87171"
+        sub = "发送成功" if ok else "点击重试"
+        self.after(0, lambda: self._set_confirm_text(status, sub, color))
+        self.after(2000, self._reset_confirm_text)
+
+    def _set_confirm_text(self, main, sub, color="#F59E0B"):
+        if self.confirm_cap is not None:
+            self.confirm_cap.configure(text=main, fg=color)
+            self.confirm_sub.configure(text=sub)
+
+    def _reset_confirm_text(self):
+        self._set_confirm_text("确定", "发送")
+        self.confirm_busy = False
 
 
 if __name__ == "__main__":

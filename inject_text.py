@@ -160,6 +160,39 @@ def _restore_moved(moved):
             pass
 
 
+def send_enter(title="ChatGPT"):
+    """聚焦 Codex 输入框并回车发送（模拟器"确定"键）。
+    复用注入的几何定位 + 临时挪开模拟器逻辑，不走 UIA。"""
+    agent_wins = [hwnd for hwnd, _ in find_windows("AgentPad")]
+    wins = find_windows(title)
+    if not wins:
+        print("ERROR: no window:", title)
+        return False
+    hwnd, _ = wins[0]
+    if win32gui.IsIconic(hwnd):
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+    _activate(hwnd)
+    time.sleep(0.3)
+    rect = win32gui.GetWindowRect(hwnd)
+    cx, cy = (rect[0] + rect[2]) // 2, rect[3] - 100
+    moved = _clear_click_point(agent_wins, cx, cy)
+    try:
+        win32api.SetCursorPos((cx, cy))
+        time.sleep(0.15)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        time.sleep(0.25)
+        send_keys("{ENTER}")
+        time.sleep(0.2)
+        print("enter sent")
+        return True
+    except Exception as exc:
+        print("send failed:", exc)
+        return False
+    finally:
+        _restore_moved(moved)
+
+
 def inject_text(text, title="ChatGPT"):
     # 1) 找 AgentPad 窗口（不最小化；挡住点击点时才临时挪开，保持 UI 可见）
     #    标题匹配用 "AgentPad"：新模拟器标题是 "AgentPad v1 模拟器 · 4×4 布局"。
