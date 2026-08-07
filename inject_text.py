@@ -131,7 +131,6 @@ def _uia_read_composer(hwnd, rect, timeout=4.0):
 
 
 def inject_text(text, title="ChatGPT"):
-    _arm_watchdog(15)
     # 1) 收起置顶的模拟器，避免挡住输入区（结束后会恢复）
     #    标题匹配用 "AgentPad"：新模拟器标题是 "AgentPad v1 模拟器 · 4×4 布局"，
     #    不再包含连续串 "AgentPad 模拟器"。
@@ -245,6 +244,7 @@ def main():
     if not text:
         print("no text")
         return 1
+    _arm_watchdog(15)
     return 0 if inject_text(text, title=args.title) else 1
 
 

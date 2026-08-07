@@ -23,13 +23,13 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
-INJECT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inject_text.py")
-
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whisper-small")
 RESULT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt_result.txt")
 WAV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt_tmp.wav")
 
 RATE = 16000
+INJECT_LOCK = threading.Lock()
+inject_mod = None  # main() 里加载（进程内注入，不再 spawn 子进程）
 
 
 def _force_utf8_stdio():
@@ -117,40 +117,45 @@ def transcribe(model, wav_path):
 
 
 def run_inject(text):
-    """派生子进程执行注入（后台进程直接调 UI 自动化会被 Windows 限制焦点）。
-    超时自动重试一次：注入幂等（文字已在输入框会跳过粘贴），不会重复。"""
-    for attempt in (1, 2):
+    """进程内直接调用注入（不再 spawn 子进程）。
+    之前子进程在部分环境下启动/import 阶段会卡死 20-30 秒且无输出；
+    进程内调用 + 15 秒线程超时，失败不阻塞后续按键。
+    注意：超时后不释放锁（旧线程可能还在点击），避免并发注入互相干扰。"""
+    if inject_mod is None:
+        return False, "inject lib not loaded"
+    if not INJECT_LOCK.acquire(blocking=False):
+        return False, "busy: 上一次注入还在进行，稍后再试"
+    result = {}
+
+    def work():
         try:
-            p = subprocess.run(
-                [sys.executable, INJECT_SCRIPT, text],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=20,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            lines = (p.stdout or "").strip().splitlines()
-            detail = lines[-1] if lines else "rc=%d" % p.returncode
-            err_lines = (p.stderr or "").strip().splitlines()
-            if p.returncode != 0 and err_lines:
-                detail += " | " + err_lines[-1]
-            return p.returncode == 0, detail
-        except subprocess.TimeoutExpired as exc:
-            partial = (exc.stdout or "")
-            lines = partial.strip().splitlines()
-            detail = "timeout: " + (lines[-1] if lines else "no output")
-            if attempt == 1:
-                log_result(">>> 注入超时，自动重试一次（" + detail + "）")
-                time.sleep(1)
-                continue
-            return False, detail
+            result["ok"] = bool(inject_mod.inject_text(text))
+            result["done"] = True
         except Exception as exc:
-            return False, repr(exc)
-    return False, "unreachable"
+            result["err"] = repr(exc)
+            result["done"] = True
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(15.0)
+    if not result.get("done"):
+        return False, "inject slow (线程仍在进行，请观察输入框)"
+    INJECT_LOCK.release()
+    if result.get("err"):
+        return False, result["err"]
+    return bool(result.get("ok")), "in-process inject done"
 
 
 def main():
+    global inject_mod
     _force_utf8_stdio()
+    log_result("loading inject libs ...")
+    try:
+        import inject_text as inject_mod
+    except Exception as exc:
+        log_error(exc)
+        raise
+    log_result("inject libs ready")
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", default="COM5")
     ap.add_argument("--model", default=MODEL_DIR)
