@@ -22,6 +22,10 @@ from tkinter import ttk
 CHANNEL_MAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "channel_map.json")
 DISPLAY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "display_state_v2.json")
 N_CHANNELS = 6
+GRID_POS = {
+    1: "上排·左", 2: "上排·中", 3: "上排·右",
+    4: "下排·左", 5: "下排·中", 6: "下排·右",
+}
 
 
 def find_state_db():
@@ -113,7 +117,7 @@ class App(tk.Tk):
         for slot in range(1, N_CHANNELS + 1):
             row = ttk.Frame(frame)
             row.pack(fill=tk.X, pady=2)
-            ttk.Label(row, text=f"频道 {slot}", width=8).pack(side=tk.LEFT)
+            ttk.Label(row, text=f"频道 {slot}（{GRID_POS[slot]}）", width=16).pack(side=tk.LEFT)
             var = tk.StringVar()
             tid = self.manual.get(slot)
             var.set(self.label_by_id.get(tid, "自动"))
@@ -193,6 +197,7 @@ class App(tk.Tk):
                     manual[slot] = tid
         save_manual(manual)
         self.status.config(text="已保存 → channel_map.json（守护进程 1 秒内生效）")
+        self.refresh_status()
 
 
 if __name__ == "__main__":

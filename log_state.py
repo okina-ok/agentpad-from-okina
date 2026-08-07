@@ -689,7 +689,9 @@ class MultiLogTracker:
         # 5) 持久化 auto 快照（manual 保留原文件内容）
         auto = {s: st.thread_id for s, st in slots.items()}
         if auto != self._last_auto:
-            save_channel_map(manual, auto, anchor)
+            # 保存前重新读一次 manual，避免覆盖面板刚写入的绑定（读写竞态）
+            cm_now = self._read_channel_map()
+            save_channel_map(cm_now["manual"], auto, cm_now.get("anchor", anchor))
             self._last_auto = auto
 
         out = []
