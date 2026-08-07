@@ -117,28 +117,36 @@ def transcribe(model, wav_path):
 
 
 def run_inject(text):
-    """派生子进程执行注入（后台进程直接调 UI 自动化会被 Windows 限制焦点）。"""
-    try:
-        p = subprocess.run(
-            [sys.executable, INJECT_SCRIPT, text],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        lines = (p.stdout or "").strip().splitlines()
-        detail = lines[-1] if lines else "rc=%d" % p.returncode
-        err_lines = (p.stderr or "").strip().splitlines()
-        if p.returncode != 0 and err_lines:
-            detail += " | " + err_lines[-1]
-        return p.returncode == 0, detail
-    except subprocess.TimeoutExpired as exc:
-        partial = (exc.stdout or "")
-        lines = partial.strip().splitlines()
-        return False, "timeout: " + (lines[-1] if lines else "no output")
-    except Exception as exc:
-        return False, repr(exc)
+    """派生子进程执行注入（后台进程直接调 UI 自动化会被 Windows 限制焦点）。
+    超时自动重试一次：注入幂等（文字已在输入框会跳过粘贴），不会重复。"""
+    for attempt in (1, 2):
+        try:
+            p = subprocess.run(
+                [sys.executable, INJECT_SCRIPT, text],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=20,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            lines = (p.stdout or "").strip().splitlines()
+            detail = lines[-1] if lines else "rc=%d" % p.returncode
+            err_lines = (p.stderr or "").strip().splitlines()
+            if p.returncode != 0 and err_lines:
+                detail += " | " + err_lines[-1]
+            return p.returncode == 0, detail
+        except subprocess.TimeoutExpired as exc:
+            partial = (exc.stdout or "")
+            lines = partial.strip().splitlines()
+            detail = "timeout: " + (lines[-1] if lines else "no output")
+            if attempt == 1:
+                log_result(">>> 注入超时，自动重试一次（" + detail + "）")
+                time.sleep(1)
+                continue
+            return False, detail
+        except Exception as exc:
+            return False, repr(exc)
+    return False, "unreachable"
 
 
 def main():

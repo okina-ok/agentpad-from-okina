@@ -11,6 +11,7 @@
 """
 
 import argparse
+import os
 import sys
 import threading
 import time
@@ -27,9 +28,23 @@ def _force_utf8_stdio():
     """stdout/stderr 统一 UTF-8：ptt.py 按 UTF-8 读注入结果，否则中文丢失。"""
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace",
+                               line_buffering=True)
         except Exception:
             pass
+
+
+def _arm_watchdog(seconds=15):
+    """自杀看门狗：任何一步意外卡死时强制退出（os._exit 无视阻塞线程），
+    避免 ptt.py 那边干等 30 秒。打印的最后一行就是卡点。"""
+    def kill():
+        time.sleep(seconds)
+        try:
+            print("WATCHDOG KILL after %ds" % seconds, flush=True)
+        except Exception:
+            pass
+        os._exit(2)
+    threading.Thread(target=kill, daemon=True).start()
 
 
 def find_windows(title_part):
@@ -116,12 +131,14 @@ def _uia_read_composer(hwnd, rect, timeout=4.0):
 
 
 def inject_text(text, title="ChatGPT"):
+    _arm_watchdog(15)
     # 1) 收起置顶的模拟器，避免挡住输入区（结束后会恢复）
     #    标题匹配用 "AgentPad"：新模拟器标题是 "AgentPad v1 模拟器 · 4×4 布局"，
     #    不再包含连续串 "AgentPad 模拟器"。
     agent_wins = [hwnd for hwnd, _ in find_windows("AgentPad")]
     for hwnd in agent_wins:
         win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+    print("minimized sim windows:", len(agent_wins))
 
     # 2) 找 Codex 桌面端窗口
     wins = find_windows(title)
@@ -134,11 +151,35 @@ def inject_text(text, title="ChatGPT"):
     # 3) 还原并激活窗口（带重试）
     if win32gui.IsIconic(hwnd):
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-    _activate(hwnd)
+    ok_fg = _activate(hwnd)
+    print("activated:", ok_fg)
     time.sleep(0.4)
 
-    # 4) 定位输入框并点击
+    # 3.5) 幂等检查：文字已在输入框就直接收尾，避免超时重试造成重复粘贴
     rect = win32gui.GetWindowRect(hwnd)
+    got0 = _uia_read_composer(hwnd, rect)
+    if got0.get("val") and text in got0["val"]:
+        print("already present, skip paste")
+        ok = True
+    else:
+        ok = inject_into_composer(text, hwnd, rect)
+
+    # 7) 恢复被收起的 AgentPad 窗口：回到桌面但不抢前台（Codex 保持在前，
+    #    输入框仍可见，用户审阅后点"确定"或直接在 Codex 里发送）
+    for hwnd in agent_wins:
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
+                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+        except Exception:
+            pass
+    print("restored sim windows")
+    return ok
+
+
+def inject_into_composer(text, hwnd, rect):
+    """定位输入框 -> 点击 -> 粘贴 -> 验证。"""
+    # 4) 定位输入框
     cx, cy = None, None
     found = _uia_find_composer(hwnd, rect)
     if found.get("xy"):
@@ -159,10 +200,12 @@ def inject_text(text, title="ChatGPT"):
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
         time.sleep(0.3)
+        print("clicked composer at:", (x, y))
 
         # 5) 粘贴
         pyperclip.copy(text)
         time.sleep(0.1)
+        print("clipboard set")
         send_keys("^v")
         time.sleep(0.3)
         print("pasted")
@@ -187,15 +230,6 @@ def inject_text(text, title="ChatGPT"):
         print("verify skipped (uia timeout)")
         ok = True
 
-    # 7) 恢复被收起的 AgentPad 窗口：回到桌面但不抢前台（Codex 保持在前，
-    #    输入框仍可见，用户审阅后点"确定"或直接在 Codex 里发送）
-    for hwnd in agent_wins:
-        try:
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
-                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
-        except Exception:
-            pass
     return ok
 
 
