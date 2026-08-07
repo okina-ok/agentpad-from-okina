@@ -83,7 +83,7 @@ def _activate(hwnd):
     return win32gui.GetForegroundWindow() == hwnd
 
 
-def _uia_find_composer(hwnd, rect, timeout=5.0):
+def _uia_find_composer(hwnd, rect, timeout=1.5):
     """后台线程跑 UIA 定位输入框，超时返回 {}（不阻塞）。
     Codex 是 Electron，descendants() 遍历在窗口忙碌时会无限挂起，
     绝不能在主流程里硬等（ptt 30 秒超时就是被它耗光的）。"""
@@ -108,7 +108,7 @@ def _uia_find_composer(hwnd, rect, timeout=5.0):
     return result
 
 
-def _uia_read_composer(hwnd, rect, timeout=4.0):
+def _uia_read_composer(hwnd, rect, timeout=1.0):
     """后台线程读回输入框内容，超时返回 {}（视为无法验证，不阻塞）。"""
     result = {}
 
@@ -130,14 +130,40 @@ def _uia_read_composer(hwnd, rect, timeout=4.0):
     return result
 
 
-def inject_text(text, title="ChatGPT"):
-    # 1) 收起置顶的模拟器，避免挡住输入区（结束后会恢复）
-    #    标题匹配用 "AgentPad"：新模拟器标题是 "AgentPad v1 模拟器 · 4×4 布局"，
-    #    不再包含连续串 "AgentPad 模拟器"。
-    agent_wins = [hwnd for hwnd, _ in find_windows("AgentPad")]
+def _clear_click_point(agent_wins, x, y):
+    """若 AgentPad 窗口盖住点击点，临时挪到屏幕右上角（注入后挪回）。
+    不再最小化：窗口全程可见，只是可能短暂挪位。"""
+    moved = []
+    sw = win32api.GetSystemMetrics(0)
     for hwnd in agent_wins:
-        win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
-    print("minimized sim windows:", len(agent_wins))
+        try:
+            r = win32gui.GetWindowRect(hwnd)
+            if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
+                w, h = r[2] - r[0], r[3] - r[1]
+                win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST,
+                                      sw - w - 24, 24, 0, 0,
+                                      win32con.SWP_NOSIZE)
+                moved.append((hwnd, r))
+                print("moved sim out of the way")
+        except Exception:
+            pass
+    return moved
+
+
+def _restore_moved(moved):
+    for hwnd, r in moved:
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST,
+                                  r[0], r[1], 0, 0, win32con.SWP_NOSIZE)
+        except Exception:
+            pass
+
+
+def inject_text(text, title="ChatGPT"):
+    # 1) 找 AgentPad 窗口（不最小化；挡住点击点时才临时挪开，保持 UI 可见）
+    #    标题匹配用 "AgentPad"：新模拟器标题是 "AgentPad v1 模拟器 · 4×4 布局"。
+    agent_wins = [hwnd for hwnd, _ in find_windows("AgentPad")]
 
     # 2) 找 Codex 桌面端窗口
     wins = find_windows(title)
@@ -154,29 +180,11 @@ def inject_text(text, title="ChatGPT"):
     print("activated:", ok_fg)
     time.sleep(0.4)
 
-    # 3.5) 幂等检查：文字已在输入框就直接收尾，避免超时重试造成重复粘贴
     rect = win32gui.GetWindowRect(hwnd)
-    got0 = _uia_read_composer(hwnd, rect)
-    if got0.get("val") and text in got0["val"]:
-        print("already present, skip paste")
-        ok = True
-    else:
-        ok = inject_into_composer(text, hwnd, rect)
-
-    # 7) 恢复被收起的 AgentPad 窗口：回到桌面但不抢前台（Codex 保持在前，
-    #    输入框仍可见，用户审阅后点"确定"或直接在 Codex 里发送）
-    for hwnd in agent_wins:
-        try:
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
-                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
-        except Exception:
-            pass
-    print("restored sim windows")
-    return ok
+    return inject_into_composer(text, hwnd, rect, agent_wins)
 
 
-def inject_into_composer(text, hwnd, rect):
+def inject_into_composer(text, hwnd, rect, agent_wins=()):
     """定位输入框 -> 点击 -> 粘贴 -> 验证。"""
     # 4) 定位输入框
     cx, cy = None, None
@@ -193,6 +201,7 @@ def inject_into_composer(text, hwnd, rect):
         cy = rect[3] - 100
         print("fallback geometry click:", (cx, cy))
     x, y = cx, cy
+    moved = _clear_click_point(agent_wins, x, y)
     try:
         win32api.SetCursorPos((x, y))
         time.sleep(0.2)
@@ -210,6 +219,7 @@ def inject_into_composer(text, hwnd, rect):
         print("pasted")
     except Exception as exc:
         print("paste failed:", exc)
+        _restore_moved(moved)
         return False
 
     # 6) 验证：读回输入框内容
@@ -229,6 +239,8 @@ def inject_into_composer(text, hwnd, rect):
         print("verify skipped (uia timeout)")
         ok = True
 
+    _restore_moved(moved)
+    print("restored sim windows")
     return ok
 
 

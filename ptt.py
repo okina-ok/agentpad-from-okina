@@ -128,22 +128,25 @@ def run_inject(text):
     result = {}
 
     def work():
+        t0 = time.time()
         try:
             result["ok"] = bool(inject_mod.inject_text(text))
+            result["secs"] = round(time.time() - t0, 1)
             result["done"] = True
         except Exception as exc:
             result["err"] = repr(exc)
+            result["secs"] = round(time.time() - t0, 1)
             result["done"] = True
 
     t = threading.Thread(target=work, daemon=True)
     t.start()
-    t.join(15.0)
+    t.join(12.0)
     if not result.get("done"):
         return False, "inject slow (线程仍在进行，请观察输入框)"
     INJECT_LOCK.release()
     if result.get("err"):
         return False, result["err"]
-    return bool(result.get("ok")), "in-process inject done"
+    return bool(result.get("ok")), "in-process inject done (%.1fs)" % result.get("secs", 0)
 
 
 def main():
