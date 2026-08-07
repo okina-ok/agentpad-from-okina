@@ -15,6 +15,7 @@ def tid(n):
 
 def mk_tracker(tmp):
     ls.CHANNEL_MAP_FILE = os.path.join(tmp, "channel_map.json")
+    ls.save_channel_map({}, {}, anchor=True)  # 本机配置：频道 1 锚定开
     t = ls.MultiLogTracker(db_path=os.path.join(tmp, "none.sqlite"),
                            state_db_path="", cache_path=os.path.join(tmp, "cache.json"))
     t.pool = {tid(i): {"title": f"会话{i}", "recency": BASE + i, "pinned": False}
@@ -62,7 +63,7 @@ def main():
     print("4) 频道1 即使最旧也锚定 OK:", [(s["slot"], s["title"]) for s in r4])
 
     # 5) 手工绑定：绑定的会话固定到指定频道，且不占自动名额
-    ls.save_channel_map({3: tid(9)}, {})
+    ls.save_channel_map({3: tid(9)}, {}, anchor=True)
     r5 = t.get_slots()
     slot3 = next(s for s in r5 if s["slot"] == 3)
     assert slot3["thread_id"] == tid(9), "手工绑定未生效"
@@ -73,13 +74,17 @@ def main():
     t2 = ls.MultiLogTracker(db_path=os.path.join(tmp, "none.sqlite"),
                             state_db_path="", cache_path=os.path.join(tmp, "cache.json"))
     t2.pool = dict(t.pool)
+    # 构造期压实用的是真实池，测试池替换后需从缓存恢复 slot_map 再压实
+    raw = __import__("json").load(open(os.path.join(tmp, "cache.json"), encoding="utf-8"))
+    t2.slot_map = {str(k): int(v) for k, v in (raw.get("slot_map") or {}).items()}
+    t2._compact_slot_map()
     r6 = t2.get_slots()
     assert [(s["slot"], s["thread_id"]) for s in r6] == [(s["slot"], s["thread_id"]) for s in r5], \
         "重启后映射变了"
     print("6) 重启持久化 OK")
 
-    # 7) 取消手工绑定：manual 段清空，线程保留原槽（稳定性设计）
-    ls.save_channel_map({}, {})
+    # 7) 取消手工绑定：manual 段清空（保留锚定设置），线程保留原槽（稳定性设计）
+    ls.save_channel_map({}, {}, anchor=True)
     r7 = t.get_slots()
     cm7 = ls.load_channel_map()
     assert cm7["manual"] == {}, "manual 未清空"
@@ -96,11 +101,21 @@ def main():
     assert len(r8) == 6
     print("8) 12 会话下频道1 锚定 OK:", [(s["slot"], s["title"]) for s in r8])
 
-    # 9) 截断 ID 一律忽略
+    # 9) 锚定关闭（产品默认）：所有频道平等，最旧的会话（含频道1）可被逐出
+    ls.save_channel_map({}, {}, anchor=False)
+    t.pool[tid(13)] = {"title": "会话13", "recency": BASE + 500, "pinned": False}
+    st13 = t._ensure_thread(tid(13))
+    st13.recency = BASE + 500
+    r9 = t.get_slots()
+    assert r9[0]["thread_id"] != tid(8), "锚定关闭后频道1 应参与 LRU 逐出"
+    assert tid(13) in [s["thread_id"] for s in r9]
+    print("9) 锚定关闭后频道1 可逐出 OK:", [(s["slot"], s["title"]) for s in r9])
+
+    # 10) 截断 ID 一律忽略
     assert ls.extract_tid("thread_id=019fd6a2-46d2} ...") is None
     assert ls.extract_tid("thread_id=019fd6a2-46d2-7310-af72-582411385d96}") == \
         "019fd6a2-46d2-7310-af72-582411385d96"
-    print("9) 截断 ID 忽略 OK")
+    print("10) 截断 ID 忽略 OK")
 
     print("CHANNEL BIND TESTS PASSED")
 

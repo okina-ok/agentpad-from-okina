@@ -70,18 +70,24 @@ def load_channel_map(path=None):
                 manual[int(k)] = str(v)
             except (ValueError, TypeError):
                 pass
-        return {"manual": manual, "auto": d.get("auto") or {}}
+        return {
+            "manual": manual,
+            "auto": d.get("auto") or {},
+            "anchor": bool(d.get("anchor_channel_1", False)),
+        }
     except (OSError, ValueError, json.JSONDecodeError):
-        return {"manual": {}, "auto": {}}
+        return {"manual": {}, "auto": {}, "anchor": False}
 
 
-def save_channel_map(manual, auto, path=None):
-    """写频道绑定文件。manual 来自用户/面板，auto 是守护进程当前的自动分配快照。"""
+def save_channel_map(manual, auto, anchor=False, path=None):
+    """写频道绑定文件。manual 来自用户/面板，auto 是自动分配快照，
+    anchor_channel_1 = 是否把频道 1 当锚定槽（默认关，普通用户所有频道平等）。"""
     path = path or CHANNEL_MAP_FILE
     try:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({
                 "version": 1,
+                "anchor_channel_1": bool(anchor),
                 "manual": {str(k): v for k, v in sorted(manual.items())},
                 "auto": {str(k): v for k, v in sorted(auto.items())},
             }, fh, ensure_ascii=False, indent=1)
@@ -372,6 +378,8 @@ class MultiLogTracker:
         self._find_state_db(state_db_path)
         self._read_pool()
         self._load_cache()
+        self._compact_slot_map()
+        self._sync_titles_from_pool()
         self._seed_active()
 
     def _find_state_db(self, explicit=None):
@@ -438,12 +446,46 @@ class MultiLogTracker:
                 }
             con.close()
             self.pool.update(fresh)  # 新增/更新；不删除，保持既有分配稳定
+            self._sync_titles_from_pool()
         except sqlite3.Error:
             pass
+
+    def _sync_titles_from_pool(self):
+        """把会话池里的标题同步到已有状态对象（新对话显示名字而不是 ID）。"""
+        for tid, info in self.pool.items():
+            st = self.threads.get(tid)
+            if st is not None and info.get("title"):
+                st.title = info["title"]
 
     def _seed_active(self):
         if not self.active_tid and self.pool:
             self.active_tid = max(self.pool, key=lambda t: self.pool[t]["recency"])
+
+    def _compact_slot_map(self):
+        """启动修复：清除幽灵/失效槽位记录，并把有效会话按原相对顺序压实（去掉空洞）。
+        只影响启动时的坏数据；正常运行期间的稳定性不受影响。"""
+        manual = self._read_channel_map()["manual"]
+        valid = {}
+        for tid, slot in self.slot_map.items():
+            if not TID_FULL_RE.fullmatch(tid):
+                continue
+            if tid not in self.threads:
+                continue
+            if tid not in manual.values() and tid not in self.pool:
+                continue
+            valid[tid] = slot
+        manual_tids = set(manual.values())
+        auto_entries = [tid for tid in valid if tid not in manual_tids]
+        auto_entries.sort(key=lambda t: valid[t])  # 保持原相对顺序，仅去洞
+        free = [s for s in range(1, self.max_threads + 1) if s not in manual]
+        new_map = {}
+        for tid in auto_entries:
+            if free:
+                new_map[tid] = free.pop(0)
+        for slot, tid in manual.items():
+            if 1 <= slot <= self.max_threads:
+                new_map[tid] = slot
+        self.slot_map = new_map
 
     def _read_channel_map(self):
         """读取频道绑定（本机文件 mtime 不可靠，直接每次读；文件很小）。"""
@@ -582,6 +624,7 @@ class MultiLogTracker:
         now = time.time()
         cm = self._read_channel_map()
         manual = cm["manual"]
+        anchor = cm.get("anchor", False)
 
         slots = {}          # slot -> ThreadState
         placed = set()      # 已占位的 thread_id
@@ -625,8 +668,9 @@ class MultiLogTracker:
                     s: st.thread_id for s, st in slots.items()
                     if st.thread_id not in manual.values()
                 }
-                # 频道 1 是锚定槽：不参与逐出（用户要求"第一频道一直在第一频道的位置"）
-                auto_slots = {s: tid for s, tid in auto_slots.items() if s != 1}
+                # 锚定开启时频道 1 不参与逐出；默认关（普通用户所有频道平等）
+                if anchor:
+                    auto_slots = {s: tid for s, tid in auto_slots.items() if s != 1}
                 if not auto_slots:
                     break
                 victim = min(
@@ -645,7 +689,7 @@ class MultiLogTracker:
         # 5) 持久化 auto 快照（manual 保留原文件内容）
         auto = {s: st.thread_id for s, st in slots.items()}
         if auto != self._last_auto:
-            save_channel_map(manual, auto)
+            save_channel_map(manual, auto, anchor)
             self._last_auto = auto
 
         out = []

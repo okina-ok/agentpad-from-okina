@@ -80,11 +80,13 @@ def save_manual(manual):
         with open(CHANNEL_MAP, "r", encoding="utf-8") as fh:
             old = json.load(fh)
         auto = old.get("auto") or {}
+        anchor = bool(old.get("anchor_channel_1", False))
     except (OSError, ValueError, json.JSONDecodeError):
-        auto = {}
+        auto, anchor = {}, False
     with open(CHANNEL_MAP, "w", encoding="utf-8") as fh:
         json.dump({
             "version": 1,
+            "anchor_channel_1": anchor,
             "manual": {str(k): v for k, v in sorted(manual.items())},
             "auto": auto,
         }, fh, ensure_ascii=False, indent=1)
