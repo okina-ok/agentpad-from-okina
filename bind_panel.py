@@ -108,8 +108,9 @@ class App(tk.Tk):
         self.vars = {}
         self.cbs = {}
         self.cur_labels = {}
+        self.autosave_after = None
 
-        tk.Label(self, text="为每个频道选择要绑定的对话；选「自动」= 让守护进程自己分配",
+        tk.Label(self, text="为每个频道选择要绑定的对话；选「自动」= 让守护进程自己分配；选择即自动保存",
                  font=("Microsoft YaHei UI", 10)).pack(pady=(10, 4))
 
         frame = ttk.Frame(self)
@@ -127,6 +128,7 @@ class App(tk.Tk):
                 width=52, state="readonly",
             )
             cb.pack(side=tk.LEFT, padx=6)
+            cb.bind("<<ComboboxSelected>>", lambda _e, s=slot: self.schedule_save(s))
             self.vars[slot] = var
             self.cbs[slot] = cb
             cur = ttk.Label(row, text="当前: -", width=34, foreground="#555555")
@@ -150,8 +152,14 @@ class App(tk.Tk):
 
         self.status = tk.Label(self, text="", fg="#0A7D32")
         self.status.pack()
-        ttk.Button(self, text="保存绑定", command=self.save).pack(pady=(2, 10))
+        ttk.Button(self, text="立即保存（已自动保存，可不用点）", command=self.save).pack(pady=(2, 10))
         self.after(2000, self.refresh_status)
+
+    def schedule_save(self, _slot=None):
+        """选中即自动保存（防抖 800ms，连续改动只保存最后一次）。"""
+        if self.autosave_after is not None:
+            self.after_cancel(self.autosave_after)
+        self.autosave_after = self.after(800, self.save)
 
     def refresh_status(self):
         """每 2 秒从守护进程的显示文件读当前映射，标在频道行上。"""
@@ -188,6 +196,7 @@ class App(tk.Tk):
             ))
 
     def save(self):
+        self.autosave_after = None
         manual = {}
         for slot, var in self.vars.items():
             sel = var.get()
@@ -196,7 +205,7 @@ class App(tk.Tk):
                 if tid:
                     manual[slot] = tid
         save_manual(manual)
-        self.status.config(text="已保存 → channel_map.json（守护进程 1 秒内生效）")
+        self.status.config(text="已保存并生效 " + time.strftime("%H:%M:%S"))
         self.refresh_status()
 
 
