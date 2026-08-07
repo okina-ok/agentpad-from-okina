@@ -596,7 +596,10 @@ class MultiLogTracker:
             and sid is not None and sid != st.last_submission_id
         )
         meaningful = apply_row(body, st, ts)
-        if meaningful:
+        # 用户消息 dispatch 行（即使同提交重复出现）也是"正在干活"的心跳，
+        # 刷新活动时间，避免真实后台任务被 10 秒安静判定误判为空闲
+        is_dispatch = "op.dispatch.user_input" in body
+        if meaningful or is_dispatch:
             st.last_event_ts = max(st.last_event_ts, ts)
             # 只有真实用户消息才切换活跃会话（后台工具行不抢焦点）
             if is_real_user:
