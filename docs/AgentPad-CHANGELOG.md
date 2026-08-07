@@ -1,7 +1,23 @@
 # AgentPad 更新日志
 
 > 产品：Codex Micro 平替 RGB 状态键盘（v1 = 通道 B 状态文件协议）
-> 当前版本：v0.7.21（2026-08-07，注入不再卡死）
+> 当前版本：v0.7.22（2026-08-07，注入可定位卡点 + 自动重试）
+
+## v0.7.22 · 2026-08-07 —— 注入全步骤日志 + 看门狗 + 幂等 + 自动重试
+
+### 修复
+- 注入脚本每一步都有 stdout 日志（minimized / target / activated /
+  composer / clicked / clipboard set / pasted / verify / restored），
+  并启用行缓冲：就算再卡住，ptt_result.txt 也能看到最后一步在哪。
+- 新增 15 秒自杀看门狗（os._exit，无视阻塞线程）：任何一步意外卡死
+  都会强制退出并打印 WATCHDOG KILL，不再让 ptt 干等 30 秒。
+- 注入幂等：点击前先读输入框，文字已在就直接收尾，
+  超时重试不会重复粘贴。
+- ptt.py 注入超时自动重试一次（20s 超时 + 1s 间隔）。
+
+### 实测
+- pythonw 注入两轮：第一轮 2.5s 完整链路 verify OK；
+  第二轮 1.3s 幂等跳过（already present, skip paste）。
 
 ## v0.7.21 · 2026-08-07 —— 注入不再卡死（UIA 超时 + 几何兜底）
 
