@@ -133,6 +133,10 @@ def run_inject(text):
         if p.returncode != 0 and err_lines:
             detail += " | " + err_lines[-1]
         return p.returncode == 0, detail
+    except subprocess.TimeoutExpired as exc:
+        partial = (exc.stdout or "")
+        lines = partial.strip().splitlines()
+        return False, "timeout: " + (lines[-1] if lines else "no output")
     except Exception as exc:
         return False, repr(exc)
 

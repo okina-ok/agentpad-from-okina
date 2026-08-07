@@ -12,6 +12,7 @@
 
 import argparse
 import sys
+import threading
 import time
 
 import pyperclip
@@ -67,6 +68,53 @@ def _activate(hwnd):
     return win32gui.GetForegroundWindow() == hwnd
 
 
+def _uia_find_composer(hwnd, rect, timeout=5.0):
+    """后台线程跑 UIA 定位输入框，超时返回 {}（不阻塞）。
+    Codex 是 Electron，descendants() 遍历在窗口忙碌时会无限挂起，
+    绝不能在主流程里硬等（ptt 30 秒超时就是被它耗光的）。"""
+    result = {}
+
+    def work():
+        try:
+            desktop = Desktop(backend="uia")
+            w = desktop.window(handle=hwnd)
+            for e in w.descendants(control_type="Edit"):
+                r = e.rectangle()
+                if r.top >= rect[3] - 400 and 30 <= (r.bottom - r.top) <= 200:
+                    result["xy"] = ((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+                    result["name"] = e.element_info.name[:40]
+                    return
+        except Exception as exc:
+            result["err"] = repr(exc)
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(timeout)
+    return result
+
+
+def _uia_read_composer(hwnd, rect, timeout=4.0):
+    """后台线程读回输入框内容，超时返回 {}（视为无法验证，不阻塞）。"""
+    result = {}
+
+    def work():
+        try:
+            desktop = Desktop(backend="uia")
+            w = desktop.window(handle=hwnd)
+            for e in w.descendants(control_type="Edit"):
+                r = e.rectangle()
+                if r.top >= rect[3] - 400 and 30 <= (r.bottom - r.top) <= 200:
+                    result["val"] = e.get_value() or ""
+                    return
+        except Exception as exc:
+            result["err"] = repr(exc)
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(timeout)
+    return result
+
+
 def inject_text(text, title="ChatGPT"):
     # 1) 收起置顶的模拟器，避免挡住输入区（结束后会恢复）
     #    标题匹配用 "AgentPad"：新模拟器标题是 "AgentPad v1 模拟器 · 4×4 布局"，
@@ -92,22 +140,17 @@ def inject_text(text, title="ChatGPT"):
     # 4) 定位输入框并点击
     rect = win32gui.GetWindowRect(hwnd)
     cx, cy = None, None
-    try:
-        # 优先：UIA 找输入框 Edit 控件（窗口底部区域内的）
-        desktop = Desktop(backend="uia")
-        w = desktop.window(handle=hwnd)
-        for e in w.descendants(control_type="Edit"):
-            r = e.rectangle()
-            if r.top >= rect[3] - 350 and 30 <= (r.bottom - r.top) <= 160:
-                cx, cy = (r.left + r.right) // 2, (r.top + r.bottom) // 2
-                print("composer control:", repr(e.element_info.name[:40]), (r.left, r.top, r.right, r.bottom))
-                break
-    except Exception as exc:
-        print("uia locate failed:", exc)
+    found = _uia_find_composer(hwnd, rect)
+    if found.get("xy"):
+        cx, cy = found["xy"]
+        print("composer control:", repr(found.get("name")), (cx, cy))
+    elif found.get("err"):
+        print("uia locate failed:", found["err"])
+    else:
+        print("uia locate timeout, use geometry fallback")
     if cx is None:
-        # 退回：窗口底部中心
         cx = (rect[0] + rect[2]) // 2
-        cy = rect[3] - 90
+        cy = rect[3] - 100
         print("fallback geometry click:", (cx, cy))
     x, y = cx, cy
     try:
@@ -129,22 +172,19 @@ def inject_text(text, title="ChatGPT"):
 
     # 6) 验证：读回输入框内容
     ok = False
-    try:
-        desktop = Desktop(backend="uia")
-        w = desktop.window(handle=hwnd)
-        r0 = win32gui.GetWindowRect(hwnd)
-        for e in w.descendants(control_type="Edit"):
-            r = e.rectangle()
-            if r.top >= r0[3] - 350 and 30 <= (r.bottom - r.top) <= 160:
-                val = e.get_value() or ""
-                ok = text in val
-                if ok:
-                    print("verify OK")
-                else:
-                    print("verify FAIL, composer:", repr(val[:60]))
-                break
-    except Exception as exc:
-        print("verify skipped:", exc)
+    got = _uia_read_composer(hwnd, win32gui.GetWindowRect(hwnd))
+    val = got.get("val")
+    if val is not None:
+        ok = text in val
+        if ok:
+            print("verify OK")
+        else:
+            print("verify FAIL, composer:", repr(val[:60]))
+    elif got.get("err"):
+        print("verify skipped:", got["err"])
+        ok = True
+    else:
+        print("verify skipped (uia timeout)")
         ok = True
 
     # 7) 恢复被收起的 AgentPad 窗口：回到桌面但不抢前台（Codex 保持在前，
