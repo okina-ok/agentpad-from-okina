@@ -134,6 +134,9 @@ def apply_row(body, st, ts):
     is_midturn_hint = m_nf is not None and m_nf.group(1) == "true"
     m_sub = re.search(r'submission\.id="(' + TID_FULL_RE.pattern + r')"', body)
     sid = m_sub.group(1) if m_sub is not None else None
+    m_turn = re.search(r"turn\.id=(" + TID_FULL_RE.pattern + r")", body)
+    turn_id = m_turn.group(1) if m_turn is not None else None
+    is_new_turn = turn_id is not None and turn_id != st.last_turn_id
     is_new_submission = sid is not None and sid != st.last_submission_id
     is_real_user = (
         "op.dispatch.user_input" in body
@@ -143,7 +146,17 @@ def apply_row(body, st, ts):
     )
     if sid is not None:
         st.last_submission_id = sid
+    if turn_id is not None:
+        st.last_turn_id = turn_id
 
+    # 0) 新回合（turn.id 变化）-> thinking
+    #    原生回合生命周期标记：新回合一出现立即回思考，
+    #    不依赖"用户消息行"（工具/自动化触发的新回合也能识别）。
+    if is_new_turn:
+        st.last_response_ts = 0
+        st.last_content_ts = 0
+        set_state(st, "thinking", ts, "turn started")
+        meaningful = True
     # 1) 工具行 -> running
     #    注意：app 日志里的 "tool call completed" 是工具开始执行的回执
     #    （execution_started=true，handler_duration_ms 只是 dispatch 耗时），
@@ -220,6 +233,7 @@ class ThreadState:
         self.last_response_ts = 0
         self.last_content_ts = 0
         self.last_submission_id = ""
+        self.last_turn_id = ""
         self.summary = ""
         self.title = ""
         self.recency = 0      # 最近活跃时间（来自 app 线程表或日志）
@@ -241,6 +255,7 @@ class LogStateTracker:
         self.last_content_ts = 0    # 最近一次"助手文本内容完成"（done 兜底判定参考点）
         self.watched_thread = ""    # 当前关注的 thread_id（真实用户消息决定）
         self.last_submission_id = ""  # 最近一次看到的 submission.id（去重"假用户消息"）
+        self.last_turn_id = ""        # 最近一次看到的 turn.id（新回合即思考）
         self._load()
         self._seed_watched_thread()
 
@@ -291,6 +306,7 @@ class LogStateTracker:
             self.last_content_ts = int(c.get("last_content_ts", 0))
             self.watched_thread = c.get("watched_thread", "")
             self.last_submission_id = c.get("last_submission_id", "")
+            self.last_turn_id = c.get("last_turn_id", "")
         except (OSError, ValueError, json.JSONDecodeError):
             pass
 
@@ -307,6 +323,7 @@ class LogStateTracker:
                     "last_content_ts": self.last_content_ts,
                     "watched_thread": self.watched_thread,
                     "last_submission_id": self.last_submission_id,
+                    "last_turn_id": self.last_turn_id,
                 }, fh)
         except OSError:
             pass
@@ -531,6 +548,7 @@ class MultiLogTracker:
                 st.last_response_ts = int(d.get("last_response_ts", 0))
                 st.last_content_ts = int(d.get("last_content_ts", 0))
                 st.last_submission_id = d.get("last_submission_id", "")
+                st.last_turn_id = d.get("last_turn_id", "")
                 st.title = d.get("title", "")
                 st.recency = int(d.get("recency", 0))
                 st.seq = int(d.get("seq", 0))
@@ -554,6 +572,7 @@ class MultiLogTracker:
                             "last_response_ts": st.last_response_ts,
                             "last_content_ts": st.last_content_ts,
                             "last_submission_id": st.last_submission_id,
+                            "last_turn_id": st.last_turn_id,
                             "title": st.title,
                             "recency": st.recency,
                             "seq": st.seq,

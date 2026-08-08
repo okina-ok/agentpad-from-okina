@@ -243,6 +243,23 @@ def main():
     assert tracker.state == "running", tracker.state
     print("18) transport echo rows skipped OK")
 
+    # 19) 新回合 turn.id 变化 -> thinking（原生回合生命周期，不依赖用户消息行）
+    insert(con, [(130, t0 + 22,
+                  'session_loop{thread_id=%s}:turn{otel.name="session_task.turn" '
+                  'turn.id=019f0000-0000-0000-0000-00000000000a model=x}: '
+                  'Output item item_type="reasoning"' % OTHER)])
+    tracker.poll()
+    assert tracker.state == "thinking", tracker.state
+    assert tracker.last_turn_id == "019f0000-0000-0000-0000-00000000000a"
+    # 同一回合的后续行不再触发
+    insert(con, [(131, t0 + 23,
+                  'session_loop{thread_id=%s}:turn{otel.name="session_task.turn" '
+                  'turn.id=019f0000-0000-0000-0000-00000000000a}: '
+                  'Output item item_type="function_call"' % OTHER)])
+    tracker.poll()
+    assert tracker.state == "running", tracker.state
+    print("19) new turn.id -> thinking; same turn stays OK")
+
     con.close()
     print("ALL TESTS PASSED")
 

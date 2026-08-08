@@ -109,6 +109,8 @@ class Simulator(tk.Tk):
         self.confirm_sub = None
         self.confirm_busy = False
         self.last_voice_text = ""
+        self.screen_mode = "state"       # state=频道状态 / voice=待发送预览
+        self.screen_voice_until = 0.0
         self.last_payload = None
         self.t = 0.0
         # ---- PTT 子进程（复用 ptt.py --demo，与实体按键同一条链路）----
@@ -254,15 +256,21 @@ class Simulator(tk.Tk):
                              fg="#DDDDDD" if f > 0.35 else "#777777")
 
         # 屏幕：显示当前最活跃频道的状态 + 电量（v1 固定占位）
-        active = self._pick_active(agents)
-        if active:
-            st = STATE_ZH.get(active.get("state"), active.get("state", "?"))
-            slot = active.get("slot", "?")
-            self.screen_line1.configure(text=f"A{slot} · {st}")
+        if self.screen_mode == "voice" and time.time() < self.screen_voice_until:
+            self.screen_line1.configure(text="待发送 · 点确定")
+            self.screen_line2.configure(text=(self.last_voice_text or "")[:16])
         else:
-            self.screen_line1.configure(text="就绪")
-        total = sum(1 for a in agents if a.get("src") != "empty")
-        self.screen_line2.configure(text=f"电量 100% · {total} 会话")
+            if self.screen_mode == "voice":
+                self.screen_mode = "state"  # 预览过期，回到状态页
+            active = self._pick_active(agents)
+            if active:
+                st = STATE_ZH.get(active.get("state"), active.get("state", "?"))
+                slot = active.get("slot", "?")
+                self.screen_line1.configure(text=f"A{slot} · {st}")
+            else:
+                self.screen_line1.configure(text="就绪")
+            total = sum(1 for a in agents if a.get("src") != "empty")
+            self.screen_line2.configure(text=f"电量 100% · {total} 会话")
 
         self._draw_knob(active)
 
@@ -330,6 +338,8 @@ class Simulator(tk.Tk):
                     self.ptt_state = "ready"
                 if "转写结果" in line and "：" in line:
                     self.last_voice_text = line.split("：", 1)[1].strip()
+                    self.screen_mode = "voice"
+                    self.screen_voice_until = time.time() + 12
                 elif "ERROR" in line or "Traceback" in line:
                     self.ptt_state = "error"
         except Exception:
@@ -426,6 +436,8 @@ class Simulator(tk.Tk):
         status = "已发送" if ok else "发送失败"
         color = "#4ADE80" if ok else "#F87171"
         sub = detail if not ok else "点击可再发"
+        if ok:
+            self.screen_mode = "state"  # 发送成功，撤下待发送预览
         self.after(0, lambda: self._set_confirm_text(status, sub, color))
         self.after(2000, self._reset_confirm_text)
 

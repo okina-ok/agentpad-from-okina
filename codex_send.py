@@ -34,9 +34,29 @@ def active_thread_id():
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as fh:
             d = json.load(fh)
-        return d.get("active_tid") or ""
+        tid = d.get("active_tid") or ""
+        if tid:
+            return tid
     except Exception:
-        return ""
+        pass
+    # 兜底：最近更新的线程（state_5.sqlite threads.updated_at_ms）
+    try:
+        import sqlite3
+        home = os.path.expanduser("~/.codex")
+        import glob
+        cands = sorted(glob.glob(os.path.join(home, "state_*.sqlite")),
+                       key=os.path.getmtime, reverse=True)
+        for db in cands:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+            row = con.execute(
+                "SELECT id FROM threads WHERE archived = 0 "
+                "ORDER BY updated_at_ms DESC LIMIT 1").fetchone()
+            con.close()
+            if row:
+                return row[0]
+    except Exception:
+        pass
+    return ""
 
 
 def send_text(text, thread_id=None, timeout=45.0):
